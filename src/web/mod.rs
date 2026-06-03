@@ -798,6 +798,113 @@ fn build_avail_schedule(all_rules: &[(i32, String, String)]) -> String {
         .join(";")
 }
 
+/// Query parameters that the embed-code generator threads into the booking
+/// flow. When `embed=1`, the booking pages drop their chrome (logo, footer,
+/// theme toggle) and emit a postMessage on load so the parent iframe can
+/// auto-size. The other fields are passed straight through to the templates
+/// as visual hints. None of them are persisted server-side — the embed code
+/// embeds them as URL params on every iframe load.
+#[derive(Deserialize, Default, Clone, Debug)]
+struct EmbedParams {
+    #[serde(default)]
+    embed: Option<String>,
+    #[serde(default)]
+    layout: Option<String>,
+    #[serde(default)]
+    theme: Option<String>,
+    #[serde(default)]
+    brand: Option<String>,
+}
+
+impl EmbedParams {
+    fn is_embedded(&self) -> bool {
+        matches!(self.embed.as_deref(), Some("1") | Some("true"))
+    }
+
+    /// Validated hex color suitable for inlining into a CSS variable. Returns
+    /// None if `brand` is missing, empty, or not 3/6 hex digits — we never
+    /// pass raw user input into CSS to avoid breaking out of the rule. The
+    /// leading "#" is added here; the wire format omits it (URLs use "#" as
+    /// the fragment delimiter).
+    fn brand_css(&self) -> Option<String> {
+        let raw = self.brand.as_deref()?.trim_start_matches('#');
+        let len = raw.len();
+        if (len == 3 || len == 6) && raw.chars().all(|c| c.is_ascii_hexdigit()) {
+            Some(format!("#{}", raw))
+        } else {
+            None
+        }
+    }
+
+    /// "?embed=1&layout=month&theme=dark&brand=ff0000" — used to keep params
+    /// alive across page transitions inside the iframe. Returns empty string
+    /// when not embedded so callers can unconditionally append it.
+    fn query_suffix(&self, leading_amp: bool) -> String {
+        if !self.is_embedded() {
+            return String::new();
+        }
+        let mut parts: Vec<String> = vec!["embed=1".to_string()];
+        if let Some(v) = self.layout.as_deref().filter(|s| !s.is_empty()) {
+            parts.push(format!("layout={}", urlencode_simple(v)));
+        }
+        if let Some(v) = self.theme.as_deref().filter(|s| !s.is_empty()) {
+            parts.push(format!("theme={}", urlencode_simple(v)));
+        }
+        if let Some(v) = self.brand.as_deref().filter(|s| !s.is_empty()) {
+            parts.push(format!("brand={}", urlencode_simple(v)));
+        }
+        let sep = if leading_amp { "&" } else { "?" };
+        format!("{}{}", sep, parts.join("&"))
+    }
+}
+
+/// Minimal URL-encoder for the small whitelist of values EmbedParams carries
+/// (slug-like layout names, theme tokens, hex colors). Keeps the helper
+/// dependency-free; if we ever accept richer values we can swap in `urlencoding`.
+fn urlencode_simple(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// Wrap an HTML render in a response. When `embed=1`, override the global
+/// `X-Frame-Options: SAMEORIGIN` and `Content-Security-Policy: frame-ancestors
+/// 'self'` so the page can be loaded inside a third-party iframe. CSP Level 2
+/// browsers honor `frame-ancestors` and ignore X-Frame-Options when both are
+/// present; we set both for safety. The outer `SetResponseHeaderLayer::
+/// if_not_present` skips the defaults once we've set our values.
+fn html_response(body: String, embed: &EmbedParams) -> Response {
+    let mut resp = Html(body).into_response();
+    if embed.is_embedded() {
+        let headers = resp.headers_mut();
+        headers.insert(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            axum::http::HeaderValue::from_static(
+                "default-src 'self'; img-src 'self' data:; \
+                 style-src 'self' 'unsafe-inline'; \
+                 script-src 'self' 'unsafe-inline'; \
+                 object-src 'none'; base-uri 'self'; frame-ancestors *",
+            ),
+        );
+        // Non-standard but widely-recognized hint for legacy browsers that
+        // ignore CSP frame-ancestors. Modern browsers (Chrome/FF/Safari)
+        // treat unknown X-Frame-Options values as "no restriction" once
+        // frame-ancestors is set per CSP Level 2.
+        headers.insert(
+            axum::http::header::X_FRAME_OPTIONS,
+            axum::http::HeaderValue::from_static("ALLOWALL"),
+        );
+    }
+    resp
+}
+
 /// Middleware that ensures a CSRF cookie is set on every response.
 async fn csrf_cookie_middleware(
     headers: HeaderMap,
@@ -906,6 +1013,8 @@ pub async fn create_router(pool: SqlitePool, data_dir: PathBuf, secret_key: [u8;
             "/dashboard/event-types/{slug}/overrides/{override_id}/delete",
             post(delete_override),
         )
+        // Embed code generator
+        .route("/dashboard/event-types/{slug}/embed", get(embed_page))
         // Calendar source management
         .route(
             "/dashboard/sources/new",
@@ -1013,6 +1122,7 @@ pub async fn create_router(pool: SqlitePool, data_dir: PathBuf, secret_key: [u8;
         .route("/logo", get(serve_logo))
         .route("/accent.css", get(serve_accent_css))
         .route("/brand-logo", get(serve_brand_logo))
+        .route("/embed.js", get(serve_embed_js))
         .route("/fonts/inter-latin.woff2", get(serve_font_inter_latin))
         .route(
             "/fonts/inter-latin-ext.woff2",
@@ -1422,6 +1532,7 @@ async fn dashboard_event_types(
             toggle_url => format!("/dashboard/event-types/{}/toggle", slug),
             delete_url => format!("/dashboard/event-types/{}/delete", slug),
             overrides_url => format!("/dashboard/event-types/{}/overrides", slug),
+            embed_url => format!("/dashboard/event-types/{}/embed", slug),
             view_url => if vis != "private" { user.username.as_ref().map(|u| format!("/u/{}/{}", u, slug)) } else { None::<String> },
         });
     }
@@ -6381,6 +6492,77 @@ async fn delete_override(
     Redirect::to(&format!("/dashboard/event-types/{}/overrides", slug)).into_response()
 }
 
+/// Renders the embed code generator for a personal event type. The page is
+/// all client-side once rendered: changing form fields rebuilds the snippet
+/// and reloads the preview iframe — nothing is persisted server-side.
+async fn embed_page(
+    State(state): State<Arc<AppState>>,
+    auth_user: crate::auth::AuthUser,
+    Path(slug): Path<String>,
+) -> Response {
+    let user = &auth_user.user;
+
+    let et: Option<(String, String, String, String, String)> = sqlx::query_as(
+        "SELECT et.id, et.slug, et.title, et.default_calendar_view, et.visibility \
+         FROM event_types et \
+         JOIN accounts a ON a.id = et.account_id \
+         WHERE a.user_id = ? AND et.slug = ? AND et.team_id IS NULL",
+    )
+    .bind(&user.id)
+    .bind(&slug)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or(None);
+
+    let (_et_id, et_slug, et_title, default_calendar_view, visibility) = match et {
+        Some(e) => e,
+        None => return Redirect::to("/dashboard/event-types").into_response(),
+    };
+
+    // Username for the cal link path: /u/{username}/{slug}.
+    let username: String = user.username.clone().unwrap_or_else(|| user.id.clone());
+    let cal_path = format!("/u/{}/{}", username, et_slug);
+
+    let base_url = std::env::var("CALRS_BASE_URL").unwrap_or_default();
+    let base_url = base_url.trim_end_matches('/').to_string();
+
+    // Pre-fill brand color from the org theme so the default snippet matches
+    // the rest of the site.
+    let accent: Option<String> =
+        sqlx::query_scalar("SELECT custom_accent FROM auth_config WHERE id = 'singleton'")
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+    let accent = accent
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "#2563eb".to_string());
+
+    let tmpl = match state.templates.get_template("embed.html") {
+        Ok(t) => t,
+        Err(e) => return internal_error_response("template render", &e),
+    };
+
+    let (impersonating, impersonating_name, _) = impersonation_ctx(&auth_user);
+
+    Html(
+        tmpl.render(context! {
+            sidebar => sidebar_context(&auth_user, "event-types"),
+            event_type_title => et_title,
+            event_type_slug => et_slug,
+            cal_path => cal_path,
+            base_url => base_url,
+            default_layout => default_calendar_view,
+            accent_color => accent,
+            visibility => visibility,
+            impersonating => impersonating,
+            impersonating_name => impersonating_name,
+        })
+        .unwrap_or_default(),
+    )
+    .into_response()
+}
+
 // --- Group event type handlers ---
 
 async fn new_group_event_type_form(
@@ -7450,7 +7632,8 @@ async fn show_group_slots(
     headers: HeaderMap,
     Path((team_slug, slug)): Path<(String, String)>,
     Query(query): Query<SlotsQuery>,
-) -> impl IntoResponse {
+) -> Response {
+    let embed = query.embed_params();
     let lang = crate::i18n::detect_from_headers(&headers);
     let et: Option<(String, String, String, Option<String>, i32, i32, i32, i32, String, Option<String>, String, String, String, String, Option<String>, String)> = sqlx::query_as(
         "SELECT et.id, et.slug, et.title, et.description, et.duration_min, et.buffer_before, et.buffer_after, et.min_notice_min, et.location_type, et.location_value, t.name, et.visibility, et.scheduling_mode, t.visibility, t.invite_token, et.default_calendar_view
@@ -7483,7 +7666,7 @@ async fn show_group_slots(
         default_calendar_view,
     ) = match et {
         Some(e) => e,
-        None => return Html("Event type not found.".to_string()),
+        None => return Html("Event type not found.".to_string()).into_response(),
     };
 
     // Validate access: booking invite (for private/internal ET) or team invite (for private team)
@@ -7491,7 +7674,9 @@ async fn show_group_slots(
         // Event type requires a booking invite
         let token = match &query.invite {
             Some(t) => t,
-            None => return Html("This event type requires an invite link.".to_string()),
+            None => {
+                return Html("This event type requires an invite link.".to_string()).into_response()
+            }
         };
         let invite: Option<(Option<String>, i32, i32)> = sqlx::query_as(
             "SELECT expires_at, max_uses, used_count FROM booking_invites WHERE token = ? AND event_type_id = ?",
@@ -7503,15 +7688,16 @@ async fn show_group_slots(
         .unwrap_or(None);
 
         match invite {
-            None => return Html("Invalid invite link.".to_string()),
+            None => return Html("Invalid invite link.".to_string()).into_response(),
             Some((expires_at, max_uses, used_count)) => {
                 if let Some(exp) = &expires_at {
                     if exp < &chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string() {
-                        return Html("This invite link has expired.".to_string());
+                        return Html("This invite link has expired.".to_string()).into_response();
                     }
                 }
                 if used_count >= max_uses {
-                    return Html("This invite link has already been used.".to_string());
+                    return Html("This invite link has already been used.".to_string())
+                        .into_response();
                 }
             }
         }
@@ -7519,7 +7705,7 @@ async fn show_group_slots(
         // Public event type on a private team — needs the team invite token
         let valid = matches!((&team_invite_token, &query.invite), (Some(expected), Some(provided)) if !provided.is_empty() && provided == expected);
         if !valid {
-            return Html("Event type not found.".to_string());
+            return Html("Event type not found.".to_string()).into_response();
         }
     }
 
@@ -7692,7 +7878,7 @@ async fn show_group_slots(
 
     let tmpl = match state.templates.get_template("slots.html") {
         Ok(t) => t,
-        Err(e) => return internal_error_html("internal", &e),
+        Err(e) => return internal_error_html("internal", &e).into_response(),
     };
     let rendered = tmpl
         .render(context! {
@@ -7722,13 +7908,18 @@ async fn show_group_slots(
             guest_tz => guest_tz_name,
             tz_options => tz_options,
             invite_token => query.invite.as_deref().unwrap_or(""),
-            default_calendar_view => default_calendar_view,
+            default_calendar_view => embed.layout.as_deref().filter(|s| !s.is_empty()).unwrap_or(default_calendar_view.as_str()),
             company_link => state.company_link.read().await.clone(),
             lang => lang,
+            embed => embed.is_embedded(),
+            embed_brand => embed.brand_css().unwrap_or_default(),
+            embed_theme => embed.theme.as_deref().unwrap_or(""),
+            embed_qs_amp => embed.query_suffix(true),
+            embed_qs_q => embed.query_suffix(false),
         })
         .unwrap_or_else(|e| internal_error_body("template render", &e));
 
-    Html(rendered)
+    html_response(rendered, &embed)
 }
 
 async fn show_group_book_form(
@@ -7736,7 +7927,8 @@ async fn show_group_book_form(
     headers: HeaderMap,
     Path((team_slug, slug)): Path<(String, String)>,
     Query(query): Query<BookQuery>,
-) -> impl IntoResponse {
+) -> Response {
+    let embed = query.embed_params();
     let lang = crate::i18n::detect_from_headers(&headers);
     let et: Option<(String, String, String, Option<String>, i32, String, Option<String>, String, String, i32, String, Option<String>)> = sqlx::query_as(
         "SELECT et.id, et.slug, et.title, et.description, et.duration_min, et.location_type, et.location_value, t.name, et.visibility, et.max_additional_guests, t.visibility, t.invite_token
@@ -7765,7 +7957,7 @@ async fn show_group_book_form(
         team_invite_token,
     ) = match et {
         Some(e) => e,
-        None => return Html("Event type not found.".to_string()),
+        None => return Html("Event type not found.".to_string()).into_response(),
     };
 
     // Validate access
@@ -7774,7 +7966,9 @@ async fn show_group_book_form(
     if visibility == "private" || visibility == "internal" {
         let token = match &query.invite {
             Some(t) => t,
-            None => return Html("This event type requires an invite link.".to_string()),
+            None => {
+                return Html("This event type requires an invite link.".to_string()).into_response()
+            }
         };
         let invite: Option<(String, String, Option<String>, i32, i32)> = sqlx::query_as(
             "SELECT guest_name, guest_email, expires_at, max_uses, used_count FROM booking_invites WHERE token = ? AND event_type_id = ?",
@@ -7786,15 +7980,16 @@ async fn show_group_book_form(
         .unwrap_or(None);
 
         match invite {
-            None => return Html("Invalid invite link.".to_string()),
+            None => return Html("Invalid invite link.".to_string()).into_response(),
             Some((name, email, expires_at, max_uses, used_count)) => {
                 if let Some(exp) = &expires_at {
                     if exp < &chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string() {
-                        return Html("This invite link has expired.".to_string());
+                        return Html("This invite link has expired.".to_string()).into_response();
                     }
                 }
                 if used_count >= max_uses {
-                    return Html("This invite link has already been used.".to_string());
+                    return Html("This invite link has already been used.".to_string())
+                        .into_response();
                 }
                 invite_guest_name = Some(name);
                 invite_guest_email = Some(email);
@@ -7804,7 +7999,7 @@ async fn show_group_book_form(
         // Public event type on a private team — needs the team invite token
         let valid = matches!((&team_invite_token, &query.invite), (Some(expected), Some(provided)) if !provided.is_empty() && provided == expected);
         if !valid {
-            return Html("Event type not found.".to_string());
+            return Html("Event type not found.".to_string()).into_response();
         }
         invite_guest_name = None;
         invite_guest_email = None;
@@ -7818,11 +8013,11 @@ async fn show_group_book_form(
 
     let date = match NaiveDate::parse_from_str(&query.date, "%Y-%m-%d") {
         Ok(d) => d,
-        Err(_) => return Html("Invalid date format.".to_string()),
+        Err(_) => return Html("Invalid date format.".to_string()).into_response(),
     };
     let time = match NaiveTime::parse_from_str(&query.time, "%H:%M") {
         Ok(t) => t,
-        Err(_) => return Html("Invalid time format.".to_string()),
+        Err(_) => return Html("Invalid time format.".to_string()).into_response(),
     };
     let end_time = (date.and_time(time) + Duration::minutes(duration as i64))
         .time()
@@ -7832,7 +8027,7 @@ async fn show_group_book_form(
 
     let tmpl = match state.templates.get_template("book.html") {
         Ok(t) => t,
-        Err(e) => return internal_error_html("internal", &e),
+        Err(e) => return internal_error_html("internal", &e).into_response(),
     };
     let rendered = tmpl
         .render(context! {
@@ -7859,18 +8054,24 @@ async fn show_group_book_form(
             max_additional_guests => max_additional_guests,
             company_link => state.company_link.read().await.clone(),
             lang => lang,
+            embed => embed.is_embedded(),
+            embed_brand => embed.brand_css().unwrap_or_default(),
+            embed_theme => embed.theme.as_deref().unwrap_or(""),
+            embed_qs_amp => embed.query_suffix(true),
+            embed_qs_q => embed.query_suffix(false),
         })
         .unwrap_or_else(|e| internal_error_body("template render", &e));
 
-    Html(rendered)
+    html_response(rendered, &embed)
 }
 
 async fn handle_group_booking(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
     Path((team_slug, slug)): Path<(String, String)>,
+    Query(embed): Query<EmbedParams>,
     Form(form): Form<BookForm>,
-) -> impl IntoResponse {
+) -> Response {
     if let Err(resp) = verify_csrf_token(&headers, &form._csrf) {
         return resp;
     }
@@ -8243,10 +8444,15 @@ async fn handle_group_booking(
             reschedule_notice_min => reschedule_notice_min,
             company_link => state.company_link.read().await.clone(),
             lang => lang,
+            embed => embed.is_embedded(),
+            embed_brand => embed.brand_css().unwrap_or_default(),
+            embed_theme => embed.theme.as_deref().unwrap_or(""),
+            embed_qs_amp => embed.query_suffix(true),
+            embed_qs_q => embed.query_suffix(false),
         })
         .unwrap_or_else(|e| internal_error_body("template render", &e));
 
-    Html(rendered).into_response()
+    html_response(rendered, &embed)
 }
 
 // --- Group slot computation ---
@@ -9013,9 +9219,12 @@ async fn show_slots_for_user(
     headers: HeaderMap,
     Path((username, slug)): Path<(String, String)>,
     Query(query): Query<SlotsQuery>,
-) -> impl IntoResponse {
+) -> Response {
+    let embed = query.embed_params();
     if username.contains('+') {
-        return show_dynamic_group_slots(&state, &headers, &username, &slug, &query).await;
+        return show_dynamic_group_slots(&state, &headers, &username, &slug, &query)
+            .await
+            .into_response();
     }
 
     let user: Option<(
@@ -9034,7 +9243,7 @@ async fn show_slots_for_user(
 
     let (host_user_id, host_name, host_title, host_avatar_path, user_lang) = match user {
         Some(user) => user,
-        None => return Html("User not found.".to_string()),
+        None => return Html("User not found.".to_string()).into_response(),
     };
 
     let lang = crate::i18n::resolve(user_lang.as_deref(), &headers);
@@ -9066,7 +9275,7 @@ async fn show_slots_for_user(
         default_calendar_view,
     ) = match et {
         Some(e) => e,
-        None => return Html("Event type not found.".to_string()),
+        None => return Html("Event type not found.".to_string()).into_response(),
     };
 
     // Validate invite token for private event types
@@ -9075,7 +9284,9 @@ async fn show_slots_for_user(
     if visibility == "private" || visibility == "internal" {
         let token = match &query.invite {
             Some(t) => t,
-            None => return Html("This event type requires an invite link.".to_string()),
+            None => {
+                return Html("This event type requires an invite link.".to_string()).into_response()
+            }
         };
         let invite: Option<(String, String, Option<String>, i32, i32)> = sqlx::query_as(
             "SELECT guest_name, guest_email, expires_at, max_uses, used_count FROM booking_invites WHERE token = ? AND event_type_id = ?",
@@ -9087,15 +9298,16 @@ async fn show_slots_for_user(
         .unwrap_or(None);
 
         match invite {
-            None => return Html("Invalid invite link.".to_string()),
+            None => return Html("Invalid invite link.".to_string()).into_response(),
             Some((name, email, expires_at, max_uses, used_count)) => {
                 if let Some(exp) = &expires_at {
                     if exp < &chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string() {
-                        return Html("This invite link has expired.".to_string());
+                        return Html("This invite link has expired.".to_string()).into_response();
                     }
                 }
                 if used_count >= max_uses {
-                    return Html("This invite link has already been used.".to_string());
+                    return Html("This invite link has already been used.".to_string())
+                        .into_response();
                 }
                 invite_guest_name = Some(name);
                 invite_guest_email = Some(email);
@@ -9176,7 +9388,7 @@ async fn show_slots_for_user(
 
     let tmpl = match state.templates.get_template("slots.html") {
         Ok(t) => t,
-        Err(e) => return internal_error_html("internal", &e),
+        Err(e) => return internal_error_html("internal", &e).into_response(),
     };
     let rendered = tmpl
         .render(context! {
@@ -9208,13 +9420,18 @@ async fn show_slots_for_user(
             invite_token => query.invite.as_deref().unwrap_or(""),
             invite_guest_name => invite_guest_name.as_deref().unwrap_or(""),
             invite_guest_email => invite_guest_email.as_deref().unwrap_or(""),
-            default_calendar_view => default_calendar_view,
+            default_calendar_view => embed.layout.as_deref().filter(|s| !s.is_empty()).unwrap_or(default_calendar_view.as_str()),
             company_link => state.company_link.read().await.clone(),
             lang => lang,
+            embed => embed.is_embedded(),
+            embed_brand => embed.brand_css().unwrap_or_default(),
+            embed_theme => embed.theme.as_deref().unwrap_or(""),
+            embed_qs_amp => embed.query_suffix(true),
+            embed_qs_q => embed.query_suffix(false),
         })
         .unwrap_or_else(|e| internal_error_body("template render", &e));
 
-    Html(rendered)
+    html_response(rendered, &embed)
 }
 
 async fn show_book_form_for_user(
@@ -9222,9 +9439,12 @@ async fn show_book_form_for_user(
     headers: HeaderMap,
     Path((username, slug)): Path<(String, String)>,
     Query(query): Query<BookQuery>,
-) -> impl IntoResponse {
+) -> Response {
+    let embed = query.embed_params();
     if username.contains('+') {
-        return show_dynamic_group_book_form(&state, &headers, &username, &slug, &query).await;
+        return show_dynamic_group_book_form(&state, &headers, &username, &slug, &query)
+            .await
+            .into_response();
     }
 
     let et: Option<(String, String, String, Option<String>, i32, String, Option<String>, String, i32, Option<String>)> = sqlx::query_as(
@@ -9253,7 +9473,7 @@ async fn show_book_form_for_user(
         user_lang,
     ) = match et {
         Some(e) => e,
-        None => return Html("Event type not found.".to_string()),
+        None => return Html("Event type not found.".to_string()).into_response(),
     };
 
     let lang = crate::i18n::resolve(user_lang.as_deref(), &headers);
@@ -9264,7 +9484,9 @@ async fn show_book_form_for_user(
     if visibility == "private" || visibility == "internal" {
         let token = match &query.invite {
             Some(t) => t,
-            None => return Html("This event type requires an invite link.".to_string()),
+            None => {
+                return Html("This event type requires an invite link.".to_string()).into_response()
+            }
         };
         let invite: Option<(String, String, Option<String>, i32, i32)> = sqlx::query_as(
             "SELECT guest_name, guest_email, expires_at, max_uses, used_count FROM booking_invites WHERE token = ? AND event_type_id = ?",
@@ -9276,15 +9498,16 @@ async fn show_book_form_for_user(
         .unwrap_or(None);
 
         match invite {
-            None => return Html("Invalid invite link.".to_string()),
+            None => return Html("Invalid invite link.".to_string()).into_response(),
             Some((name, email, expires_at, max_uses, used_count)) => {
                 if let Some(exp) = &expires_at {
                     if exp < &chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string() {
-                        return Html("This invite link has expired.".to_string());
+                        return Html("This invite link has expired.".to_string()).into_response();
                     }
                 }
                 if used_count >= max_uses {
-                    return Html("This invite link has already been used.".to_string());
+                    return Html("This invite link has already been used.".to_string())
+                        .into_response();
                 }
                 invite_guest_name = Some(name);
                 invite_guest_email = Some(email);
@@ -9307,11 +9530,11 @@ async fn show_book_form_for_user(
 
     let date = match NaiveDate::parse_from_str(&query.date, "%Y-%m-%d") {
         Ok(d) => d,
-        Err(_) => return Html("Invalid date format.".to_string()),
+        Err(_) => return Html("Invalid date format.".to_string()).into_response(),
     };
     let time = match NaiveTime::parse_from_str(&query.time, "%H:%M") {
         Ok(t) => t,
-        Err(_) => return Html("Invalid time format.".to_string()),
+        Err(_) => return Html("Invalid time format.".to_string()).into_response(),
     };
     let end_time = (date.and_time(time) + Duration::minutes(duration as i64))
         .time()
@@ -9321,7 +9544,7 @@ async fn show_book_form_for_user(
 
     let tmpl = match state.templates.get_template("book.html") {
         Ok(t) => t,
-        Err(e) => return internal_error_html("internal", &e),
+        Err(e) => return internal_error_html("internal", &e).into_response(),
     };
     let rendered = tmpl
         .render(context! {
@@ -9348,23 +9571,31 @@ async fn show_book_form_for_user(
             max_additional_guests => max_additional_guests,
             company_link => state.company_link.read().await.clone(),
             lang => lang,
+            embed => embed.is_embedded(),
+            embed_brand => embed.brand_css().unwrap_or_default(),
+            embed_theme => embed.theme.as_deref().unwrap_or(""),
+            embed_qs_amp => embed.query_suffix(true),
+            embed_qs_q => embed.query_suffix(false),
         })
         .unwrap_or_else(|e| internal_error_body("template render", &e));
 
-    Html(rendered)
+    html_response(rendered, &embed)
 }
 
 async fn handle_booking_for_user(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
     Path((username, slug)): Path<(String, String)>,
+    Query(embed): Query<EmbedParams>,
     Form(form): Form<BookForm>,
-) -> impl IntoResponse {
+) -> Response {
     if let Err(resp) = verify_csrf_token(&headers, &form._csrf) {
         return resp;
     }
     if username.contains('+') {
-        return handle_dynamic_group_booking(&state, &headers, &username, &slug, &form).await;
+        return handle_dynamic_group_booking(&state, &headers, &username, &slug, &form)
+            .await
+            .into_response();
     }
     // Rate limit by IP
     let client_ip = client_ip_for_rate_limit(&headers);
@@ -9736,10 +9967,15 @@ async fn handle_booking_for_user(
             reschedule_notice_min => reschedule_notice_min,
             company_link => state.company_link.read().await.clone(),
             lang => lang,
+            embed => embed.is_embedded(),
+            embed_brand => embed.brand_css().unwrap_or_default(),
+            embed_theme => embed.theme.as_deref().unwrap_or(""),
+            embed_qs_amp => embed.query_suffix(true),
+            embed_qs_q => embed.query_suffix(false),
         })
         .unwrap_or_else(|e| internal_error_body("template render", &e));
 
-    Html(rendered).into_response()
+    html_response(rendered, &embed)
 }
 
 // --- Slot computation (shared with CLI) ---
@@ -10410,6 +10646,25 @@ struct SlotsQuery {
     /// When "1", perform full sync + computation (AJAX callback for deferred loading)
     #[serde(default)]
     deferred: Option<String>,
+    #[serde(default)]
+    embed: Option<String>,
+    #[serde(default)]
+    layout: Option<String>,
+    #[serde(default)]
+    theme: Option<String>,
+    #[serde(default)]
+    brand: Option<String>,
+}
+
+impl SlotsQuery {
+    fn embed_params(&self) -> EmbedParams {
+        EmbedParams {
+            embed: self.embed.clone(),
+            layout: self.layout.clone(),
+            theme: self.theme.clone(),
+            brand: self.brand.clone(),
+        }
+    }
 }
 
 /// Parse a "YYYY-MM" month param, returning (year, month_1indexed). Defaults to current month in guest TZ.
@@ -10980,6 +11235,25 @@ struct BookQuery {
     tz: Option<String>,
     #[serde(default)]
     invite: Option<String>,
+    #[serde(default)]
+    embed: Option<String>,
+    #[serde(default)]
+    layout: Option<String>,
+    #[serde(default)]
+    theme: Option<String>,
+    #[serde(default)]
+    brand: Option<String>,
+}
+
+impl BookQuery {
+    fn embed_params(&self) -> EmbedParams {
+        EmbedParams {
+            embed: self.embed.clone(),
+            layout: self.layout.clone(),
+            theme: self.theme.clone(),
+            brand: self.brand.clone(),
+        }
+    }
 }
 
 async fn show_book_form(
@@ -12592,6 +12866,22 @@ async fn serve_brand_logo() -> impl IntoResponse {
         .header("Content-Type", "image/png")
         .header("Cache-Control", "public, max-age=86400")
         .body(axum::body::Body::from(BRAND_LOGO))
+        .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
+        .into_response()
+}
+
+/// Serves the embed runtime that consumers paste into their own sites. It's
+/// loaded cross-origin, so we set permissive CORS — there's no auth state to
+/// leak. The contents are checked into `assets/embed.js` and baked into the
+/// binary via `include_str!`.
+async fn serve_embed_js() -> impl IntoResponse {
+    static EMBED_JS: &str = include_str!("../../assets/embed.js");
+    axum::response::Response::builder()
+        .status(200)
+        .header("Content-Type", "application/javascript; charset=utf-8")
+        .header("Cache-Control", "public, max-age=3600")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(axum::body::Body::from(EMBED_JS))
         .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
         .into_response()
 }
@@ -21555,6 +21845,7 @@ mod tests {
                     edit_url => "/e/edit",
                     toggle_url => "/e/toggle",
                     overrides_url => "/e/overrides",
+                    embed_url => "/e/embed",
                     delete_url => "/e/delete",
                     view_url => "/e/view",
                 }],
