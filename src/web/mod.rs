@@ -9057,6 +9057,7 @@ async fn show_group_slots(
         Ok(t) => t,
         Err(e) => return internal_error_html("internal", &e).into_response(),
     };
+    let (lc_active, lc_retention) = lead_capture_ctx(&state.pool, &et_id).await;
     let rendered = tmpl
         .render(context! {
             meeting_jitsi_label => meeting_jitsi_label,
@@ -9096,6 +9097,8 @@ async fn show_group_slots(
             embed_theme => embed.theme.as_deref().unwrap_or(""),
             embed_qs_amp => embed.query_suffix(true),
             embed_qs_q => embed.query_suffix(false),
+            lead_capture_active => lc_active,
+            lead_retention_days => lc_retention,
         })
         .unwrap_or_else(|e| internal_error_body("template render", &e));
 
@@ -9949,6 +9952,7 @@ async fn show_dynamic_group_slots(
         Ok(t) => t,
         Err(e) => return internal_error_html("internal", &e),
     };
+    let (lc_active, lc_retention) = lead_capture_ctx(&state.pool, &et_id).await;
     Html(
         tmpl.render(context! {
             meeting_jitsi_label => meeting_jitsi_label,
@@ -9989,6 +9993,8 @@ async fn show_dynamic_group_slots(
             deferred_load => !is_deferred_callback,
             company_link => state.company_link.read().await.clone(),
             lang => lang,
+            lead_capture_active => lc_active,
+            lead_retention_days => lc_retention,
         })
         .unwrap_or_else(|e| internal_error_body("template render", &e)),
     )
@@ -10670,6 +10676,7 @@ async fn show_slots_for_user(
         Ok(t) => t,
         Err(e) => return internal_error_html("internal", &e).into_response(),
     };
+    let (lc_active, lc_retention) = lead_capture_ctx(&state.pool, &et_id).await;
     let rendered = tmpl
         .render(context! {
             meeting_jitsi_label => meeting_jitsi_label,
@@ -10710,6 +10717,8 @@ async fn show_slots_for_user(
             embed_theme => embed.theme.as_deref().unwrap_or(""),
             embed_qs_amp => embed.query_suffix(true),
             embed_qs_q => embed.query_suffix(false),
+            lead_capture_active => lc_active,
+            lead_retention_days => lc_retention,
         })
         .unwrap_or_else(|e| internal_error_body("template render", &e));
 
@@ -12732,6 +12741,7 @@ async fn show_slots(
         Ok(t) => t,
         Err(e) => return internal_error_html("internal", &e),
     };
+    let (lc_active, lc_retention) = lead_capture_ctx(&state.pool, &et_id).await;
     let rendered = tmpl
         .render(context! {
             meeting_jitsi_label => meeting_jitsi_label,
@@ -12761,6 +12771,8 @@ async fn show_slots(
             default_calendar_view => default_calendar_view,
             company_link => state.company_link.read().await.clone(),
             lang => lang,
+            lead_capture_active => lc_active,
+            lead_retention_days => lc_retention,
         })
         .unwrap_or_else(|e| internal_error_body("template render", &e));
 
