@@ -33,6 +33,33 @@ pub async fn migrate(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
+    // Backfill for pre-release feat/lead-capture databases. The lead-capture
+    // migrations were originally numbered 056/057 on the branch and collided
+    // with main's 056_meeting_links once main moved. After the rebase the
+    // canonical names are 057_lead_capture and 058_lead_followups, but any
+    // database that already ran the old branch has them registered under the
+    // old names — re-applying them would crash on duplicate-column errors.
+    // Treat the old entries as if the new ones had run.
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO _migrations (name, applied_at)
+         SELECT '057_lead_capture', applied_at FROM _migrations WHERE name = '056_lead_capture'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO _migrations (name, applied_at)
+         SELECT '058_lead_followups', applied_at FROM _migrations WHERE name = '057_lead_followups'",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO _migrations (name, applied_at)
+         SELECT '059_lead_capture_legal_and_phone', applied_at
+         FROM _migrations WHERE name = '058_lead_capture_legal_and_phone'",
+    )
+    .execute(pool)
+    .await;
+
     let migrations: &[(&str, &str)] = &[
         ("001_initial", include_str!("../migrations/001_initial.sql")),
         ("002_auth", include_str!("../migrations/002_auth.sql")),
@@ -245,8 +272,12 @@ pub async fn migrate(pool: &SqlitePool) -> Result<()> {
             include_str!("../migrations/057_lead_capture.sql"),
         ),
         (
-            "057_lead_followups",
-            include_str!("../migrations/057_lead_followups.sql"),
+            "058_lead_followups",
+            include_str!("../migrations/058_lead_followups.sql"),
+        ),
+        (
+            "059_lead_capture_legal_and_phone",
+            include_str!("../migrations/059_lead_capture_legal_and_phone.sql"),
         ),
     ];
 
@@ -855,7 +886,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count.0, 57, "All 57 migrations should be tracked");
+        assert_eq!(count.0, 59, "All 59 migrations should be tracked");
     }
 
     #[tokio::test]
@@ -869,7 +900,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count.0, 57, "Still 57 migrations after second run");
+        assert_eq!(count.0, 59, "Still 59 migrations after second run");
     }
 
     #[tokio::test]
