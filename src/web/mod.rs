@@ -95,6 +95,10 @@ pub struct AppState {
     pub secret_key: [u8; 32],
     pub theme_css: tokio::sync::RwLock<String>,
     pub company_link: tokio::sync::RwLock<Option<String>>,
+    /// Admin-supplied URL for the host's legal-mentions / privacy page. When
+    /// set, the verbose RGPD micro-notice on booking pages is replaced by a
+    /// single link pointing here.
+    pub legal_mentions_url: tokio::sync::RwLock<Option<String>>,
     pub captcha_config: tokio::sync::RwLock<Option<captcha::CaptchaConfig>>,
     /// CSP for booking form pages: relaxed with captcha origins when captcha
     /// is enabled, identical to `csp_baseline` otherwise. Rebuilt on admin save.
@@ -278,6 +282,12 @@ struct CompanyLinkForm {
     _csrf: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct LegalMentionsForm {
+    legal_mentions_url: String,
+    _csrf: Option<String>,
+}
+
 /// Whether a `company_link` URL is safe to render as a clickable anchor.
 /// Only `http://` and `https://` schemes are accepted; this rejects
 /// `javascript:`, `data:`, `vbscript:`, `file:` etc., any of which would
@@ -301,6 +311,19 @@ async fn get_company_link(pool: &SqlitePool) -> Option<String> {
     // Defense in depth: even if a bad value reached the DB (legacy data,
     // manual edit), refuse to render anything but http(s). The admin
     // update handler is the primary gate; this is the backstop.
+    .filter(|s| is_safe_company_link(s))
+}
+
+async fn get_legal_mentions_url(pool: &SqlitePool) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT legal_mentions_url FROM auth_config WHERE id = 'singleton'",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .flatten()
+    .filter(|s| !s.is_empty())
     .filter(|s| is_safe_company_link(s))
 }
 
@@ -404,6 +427,7 @@ pub async fn run_reminder_loop(pool: SqlitePool, secret_key: [u8; 32]) {
                 host_email: host_email.clone(),
                 uid: uid.clone(),
                 notes: None,
+                guest_phone: None,
                 location,
                 reminder_minutes: None,
                 additional_attendees: vec![],
@@ -908,6 +932,7 @@ pub async fn create_router(pool: SqlitePool, data_dir: PathBuf, secret_key: [u8;
 
     let initial_theme_css = build_theme_css(&pool).await;
     let initial_company_link = get_company_link(&pool).await;
+    let initial_legal_mentions = get_legal_mentions_url(&pool).await;
     let initial_captcha = captcha::load_captcha_config(&pool, &secret_key).await;
     let initial_csp = build_csp(&initial_captcha);
 
@@ -925,6 +950,7 @@ pub async fn create_router(pool: SqlitePool, data_dir: PathBuf, secret_key: [u8;
         data_dir,
         theme_css: tokio::sync::RwLock::new(initial_theme_css),
         company_link: tokio::sync::RwLock::new(initial_company_link),
+        legal_mentions_url: tokio::sync::RwLock::new(initial_legal_mentions),
         captcha_config: tokio::sync::RwLock::new(initial_captcha),
         csp: tokio::sync::RwLock::new(initial_csp),
         csp_baseline: build_csp(&None),
@@ -1079,6 +1105,10 @@ pub async fn create_router(pool: SqlitePool, data_dir: PathBuf, secret_key: [u8;
         .route(
             "/dashboard/admin/company-link",
             post(admin_update_company_link),
+        )
+        .route(
+            "/dashboard/admin/legal-mentions",
+            post(admin_update_legal_mentions),
         )
         .route(
             "/dashboard/admin/groups/{group_id}/members/{user_id}/weight",
@@ -4080,8 +4110,11 @@ struct EventTypeForm {
     // Additional guests
     #[serde(default)]
     max_additional_guests: String,
-    // Ask the guest for a phone number on the booking form (checkbox).
-    collect_phone: Option<String>, // "on" or absent
+    // Phone collection level: "0" = off, "1" = optional, "2" = required.
+    // String because it ships as a `<select>` value (defaults to "0" when
+    // the form posts no field).
+    #[serde(default)]
+    collect_phone: String,
     // Member priorities for round-robin (creation flow): "uid1:3,uid2:1,uid3:2"
     #[serde(default)]
     member_priorities: String,
@@ -4221,7 +4254,7 @@ async fn new_event_type_form(
             form_avail_schedule => user_avail,
             form_reminder_minutes => 1440,
             form_max_additional_guests => 0,
-            form_collect_phone => false,
+            form_collect_phone => 0,
             form_default_calendar_view => "month",
             form_first_slot_only => false,
             form_frequency_limits => "",
@@ -4416,7 +4449,7 @@ async fn create_event_type(
     .bind(&timezone)
     .bind(cancel_notice_min)
     .bind(reschedule_notice_min)
-    .bind(form.collect_phone.is_some() as i32)
+    .bind(parse_phone_level(&form.collect_phone))
     .execute(&state.pool)
     .await;
 
@@ -4576,6 +4609,16 @@ async fn edit_event_type_form(
             .await
             .unwrap_or(0);
     let lead_capture_global = crate::leads::config::global_settings(&state.pool).await;
+    let lead_capture_acknowledged_at: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT lead_capture_acknowledged_at FROM event_types WHERE id = ?",
+    )
+    .bind(&et_id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or(None)
+    .flatten()
+    // The DB stores a full ISO timestamp; the dashboard caption only needs the date.
+    .map(|s| s.chars().take(10).collect::<String>());
     let collect_phone: i32 =
         sqlx::query_scalar("SELECT collect_phone FROM event_types WHERE id = ?")
             .bind(&et_id)
@@ -4813,11 +4856,12 @@ async fn edit_event_type_form(
             form_avail_schedule => avail_schedule,
             form_reminder_minutes => reminder_min.unwrap_or(0),
             form_max_additional_guests => max_additional_guests,
-            form_collect_phone => collect_phone != 0,
+            form_collect_phone => collect_phone,
             form_scheduling_mode => scheduling_mode,
             form_default_calendar_view => default_calendar_view,
             form_first_slot_only => first_slot_only != 0,
             form_lead_capture => lead_capture_enabled != 0,
+            lead_capture_acknowledged_at => lead_capture_acknowledged_at,
             lead_capture_global_enabled => lead_capture_global.enabled,
             lead_capture_retention_days => lead_capture_global.retention_days,
             form_frequency_limits => form_frequency_limits,
@@ -4963,7 +5007,7 @@ async fn update_event_type(
     .bind(&timezone)
     .bind(cancel_notice_min)
     .bind(reschedule_notice_min)
-    .bind(form.collect_phone.is_some() as i32)
+    .bind(parse_phone_level(&form.collect_phone))
     .bind(&et_id)
     .execute(&state.pool)
     .await;
@@ -7476,6 +7520,16 @@ async fn edit_group_event_type_form(
             .await
             .unwrap_or(0);
     let lead_capture_global = crate::leads::config::global_settings(&state.pool).await;
+    let lead_capture_acknowledged_at: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT lead_capture_acknowledged_at FROM event_types WHERE id = ?",
+    )
+    .bind(&et_id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or(None)
+    .flatten()
+    // The DB stores a full ISO timestamp; the dashboard caption only needs the date.
+    .map(|s| s.chars().take(10).collect::<String>());
     let collect_phone: i32 =
         sqlx::query_scalar("SELECT collect_phone FROM event_types WHERE id = ?")
             .bind(&et_id)
@@ -7684,12 +7738,13 @@ async fn edit_group_event_type_form(
             form_avail_schedule => avail_schedule,
             form_reminder_minutes => reminder_min.unwrap_or(0),
             form_max_additional_guests => max_additional_guests,
-            form_collect_phone => collect_phone != 0,
+            form_collect_phone => collect_phone,
             form_scheduling_mode => scheduling_mode,
             form_default_calendar_view => default_calendar_view,
             form_first_slot_only => first_slot_only != 0,
             form_frequency_limits => form_frequency_limits,
             form_lead_capture => lead_capture_enabled != 0,
+            lead_capture_acknowledged_at => lead_capture_acknowledged_at,
             lead_capture_global_enabled => lead_capture_global.enabled,
             lead_capture_retention_days => lead_capture_global.retention_days,
             form_timezone => &form_timezone,
@@ -7846,7 +7901,7 @@ async fn update_group_event_type(
     .bind(&timezone)
     .bind(cancel_notice_min)
     .bind(reschedule_notice_min)
-    .bind(form.collect_phone.is_some() as i32)
+    .bind(parse_phone_level(&form.collect_phone))
     .bind(&et_id)
     .execute(&state.pool)
     .await;
@@ -8563,6 +8618,7 @@ async fn show_group_slots(
             lang => lang,
             can_book => can_book,
             lead_capture_active => lc_active,
+            legal_mentions_url => state.legal_mentions_url.read().await.clone(),
             collect_phone => collect_phone,
             lead_retention_days => lc_retention,
         })
@@ -8717,6 +8773,7 @@ async fn show_group_book_form(
             captcha_widget_url => captcha.widget_url,
             lang => lang,
             lead_capture_active => lc_active,
+            legal_mentions_url => state.legal_mentions_url.read().await.clone(),
             collect_phone => collect_phone,
             lead_retention_days => lc_retention,
         })
@@ -8943,6 +9000,12 @@ async fn handle_group_booking(
             "Not available right now",
             "The host isn't accepting more bookings for this date. Please pick a different date, or check back later.",
         );
+    }
+
+    let collect_phone_level = event_type_collect_phone(&state.pool, &et_id).await;
+    if let Err(e) = validate_phone_input(&form.phone, collect_phone_level) {
+        let _ = tx.rollback().await;
+        return Html(e).into_response();
     }
 
     let insert_result = sqlx::query(
@@ -9437,6 +9500,7 @@ async fn show_dynamic_group_slots(
             company_link => state.company_link.read().await.clone(),
             lang => lang,
             lead_capture_active => lc_active,
+            legal_mentions_url => state.legal_mentions_url.read().await.clone(),
             collect_phone => collect_phone,
             lead_retention_days => lc_retention,
         })
@@ -9553,6 +9617,7 @@ async fn show_dynamic_group_book_form(
             captcha_widget_url => captcha.widget_url,
             lang => lang,
             lead_capture_active => lc_active,
+            legal_mentions_url => state.legal_mentions_url.read().await.clone(),
             collect_phone => collect_phone,
             lead_retention_days => lc_retention,
         })
@@ -9725,6 +9790,12 @@ async fn handle_dynamic_group_booking(
         Ok(tx) => tx,
         Err(e) => return internal_error_response("database query", &e),
     };
+
+    let collect_phone_level = event_type_collect_phone(&state.pool, &et_id).await;
+    if let Err(e) = validate_phone_input(&form.phone, collect_phone_level) {
+        let _ = tx.rollback().await;
+        return Html(e).into_response();
+    }
 
     let insert_result = sqlx::query(
         "INSERT INTO bookings (id, event_type_id, uid, guest_name, guest_email, guest_timezone, notes, start_at, end_at, status, cancel_token, reschedule_token, confirm_token, language, guest_phone)
@@ -10139,6 +10210,7 @@ async fn show_slots_for_user(
             company_link => state.company_link.read().await.clone(),
             lang => lang,
             lead_capture_active => lc_active,
+            legal_mentions_url => state.legal_mentions_url.read().await.clone(),
             collect_phone => collect_phone,
             lead_retention_days => lc_retention,
         })
@@ -10285,6 +10357,7 @@ async fn show_book_form_for_user(
             captcha_widget_url => captcha.widget_url,
             lang => lang,
             lead_capture_active => lc_active,
+            legal_mentions_url => state.legal_mentions_url.read().await.clone(),
             collect_phone => collect_phone,
             lead_retention_days => lc_retention,
         })
@@ -10495,6 +10568,12 @@ async fn handle_booking_for_user(
         );
     }
 
+    let collect_phone_level = event_type_collect_phone(&state.pool, &et_id).await;
+    if let Err(e) = validate_phone_input(&form.phone, collect_phone_level) {
+        let _ = tx.rollback().await;
+        return Html(e).into_response();
+    }
+
     let insert_result = sqlx::query(
         "INSERT INTO bookings (id, event_type_id, uid, guest_name, guest_email, guest_timezone, notes, start_at, end_at, status, cancel_token, reschedule_token, confirm_token, language, guest_phone)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -10593,6 +10672,7 @@ async fn handle_booking_for_user(
             host_email,
             uid: uid.clone(),
             notes: form.notes.clone(),
+            guest_phone: normalize_phone(form.phone.as_deref()),
             location: location_display,
             reminder_minutes: reminder_min,
             additional_attendees: additional_attendees.clone(),
@@ -12148,6 +12228,7 @@ async fn show_slots(
             company_link => state.company_link.read().await.clone(),
             lang => lang,
             lead_capture_active => lc_active,
+            legal_mentions_url => state.legal_mentions_url.read().await.clone(),
             collect_phone => collect_phone,
             lead_retention_days => lc_retention,
         })
@@ -12251,6 +12332,7 @@ async fn show_book_form(
             captcha_widget_url => captcha.widget_url,
             lang => lang,
             lead_capture_active => lc_active,
+            legal_mentions_url => state.legal_mentions_url.read().await.clone(),
             collect_phone => collect_phone,
             lead_retention_days => lc_retention,
         })
@@ -12271,14 +12353,30 @@ async fn lead_capture_ctx(pool: &SqlitePool, event_type_id: &str) -> (bool, i64)
     (enabled, global.retention_days)
 }
 
-/// Whether an event type asks guests for a phone number on the booking form.
-async fn event_type_collect_phone(pool: &SqlitePool, event_type_id: &str) -> bool {
+/// Parse the `collect_phone` form select value. Accepts "0"/"1"/"2"; anything
+/// else falls back to 0. Also tolerates the historical "on" (legacy checkbox)
+/// so a stale browser tab doesn't silently downgrade the setting to off.
+fn parse_phone_level(form_value: &str) -> i32 {
+    match form_value.trim() {
+        "1" | "on" => 1,
+        "2" => 2,
+        _ => 0,
+    }
+}
+
+/// Phone collection level for an event type: 0 = off, 1 = optional, 2 = required.
+/// Values outside that range fall back to 0.
+async fn event_type_collect_phone(pool: &SqlitePool, event_type_id: &str) -> i32 {
     let v: i32 = sqlx::query_scalar("SELECT collect_phone FROM event_types WHERE id = ?")
         .bind(event_type_id)
         .fetch_one(pool)
         .await
         .unwrap_or(0);
-    v != 0
+    if (0..=2).contains(&v) {
+        v
+    } else {
+        0
+    }
 }
 
 fn validate_booking_input(name: &str, email: &str, notes: &Option<String>) -> Result<(), String> {
@@ -12301,6 +12399,24 @@ fn validate_booking_input(name: &str, email: &str, notes: &Option<String>) -> Re
     if let Some(notes) = notes {
         if notes.len() > 5000 {
             return Err("Notes must be 5000 characters or less.".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Server-side defense for the per-event-type "phone required" setting. The
+/// browser already gates the form with `required`, but a script that POSTs
+/// directly would otherwise bypass it.
+fn validate_phone_input(phone: &Option<String>, collect_phone_level: i32) -> Result<(), String> {
+    if let Some(p) = phone {
+        if p.len() > 64 {
+            return Err("Phone number must be 64 characters or less.".to_string());
+        }
+    }
+    if collect_phone_level == 2 {
+        let empty = phone.as_ref().map(|p| p.trim().is_empty()).unwrap_or(true);
+        if empty {
+            return Err("Phone number is required for this event type.".to_string());
         }
     }
     Ok(())
@@ -12560,6 +12676,12 @@ async fn handle_booking(
         );
     }
 
+    let collect_phone_level = event_type_collect_phone(&state.pool, &et_id).await;
+    if let Err(e) = validate_phone_input(&form.phone, collect_phone_level) {
+        let _ = tx.rollback().await;
+        return Html(e).into_response();
+    }
+
     let insert_result = sqlx::query(
         "INSERT INTO bookings (id, event_type_id, uid, guest_name, guest_email, guest_timezone, notes, start_at, end_at, status, cancel_token, reschedule_token, confirm_token, language, guest_phone)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -12643,6 +12765,7 @@ async fn handle_booking(
             host_email,
             uid: uid.clone(),
             notes: form.notes.clone(),
+            guest_phone: normalize_phone(form.phone.as_deref()),
             location: None,
             reminder_minutes: reminder_min,
             additional_attendees: additional_attendees.clone(),
@@ -13575,6 +13698,7 @@ async fn admin_dashboard(
             captcha_widget_url => captcha_widget_url,
             has_logo => state.data_dir.join("logo.png").exists(),
             company_link => get_company_link(&state.pool).await.unwrap_or_default(),
+            legal_mentions_url => get_legal_mentions_url(&state.pool).await.unwrap_or_default(),
             current_theme => get_theme_name(&state.pool).await,
             custom_colors => {
                 let (a, ah, bg, s, t) = get_custom_colors(&state.pool).await;
@@ -14387,6 +14511,36 @@ async fn admin_update_company_link(
     .execute(&state.pool)
     .await;
     *state.company_link.write().await = if link.is_empty() { None } else { Some(link) };
+    Redirect::to("/dashboard/admin").into_response()
+}
+
+async fn admin_update_legal_mentions(
+    State(state): State<Arc<AppState>>,
+    _admin: crate::auth::AdminUser,
+    headers: HeaderMap,
+    Form(form): Form<LegalMentionsForm>,
+) -> impl IntoResponse {
+    if let Err(resp) = verify_csrf_token(&headers, &form._csrf) {
+        return resp;
+    }
+    let link = form.legal_mentions_url.trim().to_string();
+    if !link.is_empty() && !is_safe_company_link(&link) {
+        tracing::warn!(
+            admin = %_admin.0.email,
+            "admin: legal_mentions_url rejected (only http/https schemes allowed)"
+        );
+        let msg = urlencoding::encode("Legal mentions URL must start with http:// or https://")
+            .into_owned();
+        return Redirect::to(&format!("/dashboard/admin?error={}", msg)).into_response();
+    }
+    let value: Option<&str> = if link.is_empty() { None } else { Some(&link) };
+    let _ = sqlx::query(
+        "UPDATE auth_config SET legal_mentions_url = ?, updated_at = datetime('now') WHERE id = 'singleton'",
+    )
+    .bind(value)
+    .execute(&state.pool)
+    .await;
+    *state.legal_mentions_url.write().await = if link.is_empty() { None } else { Some(link) };
     Redirect::to("/dashboard/admin").into_response()
 }
 
@@ -17368,9 +17522,20 @@ async fn toggle_event_type_lead_capture(
         None => return Redirect::to("/dashboard/event-types").into_response(),
     };
 
-    // Acknowledgement is mandatory when turning capture *on* — RGPD: the host
-    // must have informed bookers their input is being recorded.
-    if want_on && form.acknowledged.as_deref() != Some("on") {
+    // Acknowledgement is mandatory when turning capture *on* and the host has
+    // not acknowledged before — RGPD: the host must have informed bookers
+    // their input is being recorded. Once acknowledged once for an event type,
+    // subsequent enable/disable toggles don't need to re-prompt.
+    let already_acknowledged: Option<String> = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT lead_capture_acknowledged_at FROM event_types WHERE id = ?",
+    )
+    .bind(&et_id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or(None)
+    .flatten();
+    let acknowledging_now = form.acknowledged.as_deref() == Some("on");
+    if want_on && already_acknowledged.is_none() && !acknowledging_now {
         return Html(
             "Please confirm that you have informed bookers their input is captured.".to_string(),
         )
@@ -17378,11 +17543,23 @@ async fn toggle_event_type_lead_capture(
     }
 
     let new_value: i64 = if want_on { 1 } else { 0 };
-    let _ = sqlx::query("UPDATE event_types SET lead_capture = ? WHERE id = ?")
+    // Stamp the acknowledgement the first time the host confirms — never
+    // overwrite a prior timestamp so the audit trail stays intact.
+    if acknowledging_now && already_acknowledged.is_none() {
+        let _ = sqlx::query(
+            "UPDATE event_types SET lead_capture = ?, lead_capture_acknowledged_at = datetime('now') WHERE id = ?",
+        )
         .bind(new_value)
         .bind(&et_id)
         .execute(&state.pool)
         .await;
+    } else {
+        let _ = sqlx::query("UPDATE event_types SET lead_capture = ? WHERE id = ?")
+            .bind(new_value)
+            .bind(&et_id)
+            .execute(&state.pool)
+            .await;
+    }
 
     tracing::info!(
         event_type_id = %et_id,

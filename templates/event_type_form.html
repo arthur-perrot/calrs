@@ -367,7 +367,7 @@
 </details>
 
 <!-- Collapsible: Booking options -->
-<details class="card collapsible-section" style="margin-top: 1rem;"{% if editing and (form_requires_confirmation or (form_max_additional_guests is defined and form_max_additional_guests and form_max_additional_guests != 0) or (form_default_calendar_view is defined and form_default_calendar_view and form_default_calendar_view != "month")) %} open{% endif %}>
+<details class="card collapsible-section" style="margin-top: 1rem;"{% if editing and (form_requires_confirmation or (form_max_additional_guests is defined and form_max_additional_guests and form_max_additional_guests != 0) or (form_default_calendar_view is defined and form_default_calendar_view and form_default_calendar_view != "month") or (form_collect_phone is defined and form_collect_phone and form_collect_phone != 0)) %} open{% endif %}>
   <summary class="collapsible-header">
     <h2>Booking options</h2>
     <span class="collapsible-hint" id="options-hint"></span>
@@ -395,13 +395,13 @@
     </div>
 
     <div class="form-group" style="margin-top: 0.75rem;">
-      <label style="display: flex; align-items: flex-start; gap: 0.625rem; cursor: pointer;">
-        <input type="checkbox" name="collect_phone" {% if form_collect_phone %}checked{% endif %} style="accent-color: var(--accent); width: 1.125rem; height: 1.125rem; margin-top: 0.125rem;">
-        <span>
-          <strong style="font-size: 0.925rem;">Ask for a phone number</strong>
-          <div style="color: var(--text-muted); font-size: 0.825rem;">Adds an optional phone field to the booking form (and the lead-capture gate, if enabled).</div>
-        </span>
-      </label>
+      <label for="collect_phone">Phone number</label>
+      <select id="collect_phone" name="collect_phone" style="padding: 0.625rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.925rem; font-family: inherit; background: var(--surface); color: var(--text); width: 100%;">
+        <option value="0" {% if form_collect_phone == 0 %}selected{% endif %}>Don't ask</option>
+        <option value="1" {% if form_collect_phone == 1 %}selected{% endif %}>Ask, but optional</option>
+        <option value="2" {% if form_collect_phone == 2 %}selected{% endif %}>Ask, and required</option>
+      </select>
+      <span class="hint" style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-top: 0.25rem;">When collected, the phone number is included in the calendar event description and on host notification emails.</span>
     </div>
 
     <div class="form-group" style="margin-top: 0.75rem;">
@@ -521,9 +521,9 @@
 
 {% if editing %}
 <!-- Lead capture (iClosed-style) — separate form so the toggle has its own POST.
-     The whole card is only visible to logged-in hosts and gates the public-form
-     keystroke capture. RGPD: requires acknowledging that bookers will be
-     informed before the toggle can be turned on. -->
+     A single switch: enabling it pops a JS confirm() so the host explicitly
+     acknowledges they've informed bookers. The acknowledgement is then
+     submitted as a hidden field; the server still enforces it as a fallback. -->
 <div class="card" style="margin-top: 1.25rem;">
   <h2 style="margin-bottom: 0.5rem;">Lead capture</h2>
   <p class="subtitle" style="margin-bottom: 1rem;">
@@ -533,23 +533,41 @@
     {% endif %}
   </p>
 
-  <form method="POST" action="/dashboard/event-types/{{ original_slug }}/lead-capture">
+  <form method="POST" action="/dashboard/event-types/{{ original_slug }}/lead-capture" id="lead-capture-form">
     <label style="display: flex; align-items: flex-start; gap: 0.625rem; cursor: pointer; padding: 0.75rem; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 0.75rem;">
-      <input type="checkbox" name="enabled" {% if form_lead_capture %}checked{% endif %} style="accent-color: var(--accent); width: 1.125rem; height: 1.125rem; margin-top: 0.125rem;">
+      <input type="checkbox" name="enabled" id="lead-capture-enabled" {% if form_lead_capture %}checked{% endif %} style="accent-color: var(--accent); width: 1.125rem; height: 1.125rem; margin-top: 0.125rem;">
       <span>
         <strong style="font-size: 0.925rem;">Enable lead capture for this event type</strong>
-        <div style="color: var(--text-muted); font-size: 0.825rem;">Guests' name, email, phone and notes are auto-saved as they type. Captured rows are auto-purged after {{ lead_capture_retention_days }} days.</div>
+        <div style="color: var(--text-muted); font-size: 0.825rem;">Guests' name, email, phone and notes are auto-saved as they type. Captured rows are auto-purged after {{ lead_capture_retention_days }} days. Enabling will ask you to confirm that bookers are informed.</div>
       </span>
     </label>
-    <label style="display: flex; align-items: flex-start; gap: 0.625rem; cursor: pointer; padding: 0.75rem; border: 1px solid var(--border); border-radius: var(--radius);">
-      <input type="checkbox" name="acknowledged" style="accent-color: var(--accent); width: 1.125rem; height: 1.125rem; margin-top: 0.125rem;">
-      <span>
-        <strong style="font-size: 0.925rem;">I have informed bookers that their input is captured</strong>
-        <div style="color: var(--text-muted); font-size: 0.825rem;">Required to enable lead capture. The booking page already displays a notice when capture is active.</div>
-      </span>
-    </label>
-    <button type="submit" class="btn" style="margin-top: 0.875rem;">Update lead capture</button>
+    <input type="hidden" name="acknowledged" id="lead-capture-acknowledged" value="{% if lead_capture_acknowledged_at %}on{% endif %}">
+    <button type="submit" class="btn" id="lead-capture-submit" style="margin-top: 0.5rem;">Update lead capture</button>
+    {% if lead_capture_acknowledged_at %}
+      <div style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">Acknowledged on {{ lead_capture_acknowledged_at }}.</div>
+    {% endif %}
   </form>
+  <script>
+    (function() {
+      var form = document.getElementById('lead-capture-form');
+      var toggle = document.getElementById('lead-capture-enabled');
+      var ackField = document.getElementById('lead-capture-acknowledged');
+      if (!form || !toggle || !ackField) return;
+      var initiallyOn = toggle.checked;
+      form.addEventListener('submit', function(e) {
+        if (toggle.checked && ackField.value !== 'on') {
+          var msg = "By enabling lead capture, you confirm that bookers are informed their input is recorded. Continue?";
+          if (window.confirm(msg)) {
+            ackField.value = 'on';
+          } else {
+            e.preventDefault();
+            // Revert the toggle so the visible state matches the persisted one.
+            toggle.checked = initiallyOn;
+          }
+        }
+      });
+    })();
+  </script>
 </div>
 {% endif %}
 
