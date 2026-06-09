@@ -127,6 +127,59 @@ Ces points sont identifiés mais ne sont **pas** traités dans le PR de découpe
 
 1. `cargo fmt`
 2. `cargo check`
-3. `cargo test --lib` (toute la suite — 759 tests)
+3. `cargo test --bins` (toute la suite — 758 passed, 1 ignored)
 4. `cargo build --release`
-5. À partir de l'étape 6 : démarrage local sur port 3001 avec `CALRS_DATA_DIR=/tmp/calrs-cleanup` + smoke tests Chromium headless (login `you@example.org`, dashboard, slot picker, booking).
+5. À partir de l'étape 6 : démarrage local sur port 3001 avec `CALRS_DATA_DIR=/tmp/calrs-cleanup` + smoke tests Chromium headless (login `toi@example.com`, dashboard, slot picker, booking, admin).
+
+---
+
+## Status (après exécution)
+
+Toutes les étapes 1–8 ont été appliquées sur la branche `refactor/cleanup`. À chaque commit : `cargo fmt`, `cargo check`, `cargo test --bins` (758 passed, 1 ignored, identique au baseline), `cargo build --release`. Smoke tests Chromium headless sur port 3001 vert pour `/auth/login`, `/dashboard`, `/dashboard/event-types`, `/dashboard/bookings`, `/dashboard/teams`, `/dashboard/sources`, `/dashboard/settings`, `/dashboard/invite-links`, `/dashboard/admin`, `/u/toi`, `/u/toi/test`, `/u/toi/phone`, `/team/all-team`, `/test`, `/test/book`, `/booking/approve/{token}`.
+
+### `src/web/` (était 25 585 lignes en un seul `mod.rs`)
+
+| Fichier | Lignes | Rôle |
+|---|---:|---|
+| `src/web/mod.rs` | **1 609** | `AppState`, `RateLimiter`, CSRF, CSP, error sanitization, `create_router()`, 7 `include!` |
+| `src/web/dashboard.rs` | 2 730 | Pages dashboard + settings + avatars + cancel/confirm booking |
+| `src/web/event_types.rs` | 3 241 | CRUD event types + invites + overrides |
+| `src/web/group_booking.rs` | 2 860 | Group event types + legacy redirects + group public pages + dynamic groups |
+| `src/web/public_booking.rs` | 2 014 | User-scoped + public booking handlers (handle_booking*, show_slots*) |
+| `src/web/slots.rs` | 852 | `compute_slots`, busy times, `BusySource` |
+| `src/web/troubleshoot.rs` | 583 | Page de troubleshoot availability |
+| `src/web/admin.rs` | 1 300 | Admin dashboard + Google OAuth + captcha/meeting/logo/impersonate |
+| `src/web/booking_tokens.rs` | 2 586 | Tokens approve/decline/cancel/reschedule + CalDAV write-back + watchers + claim |
+| `src/web/tests.rs` | 7 805 | Tests (déplacés en étape 2) |
+| `src/web/captcha.rs` | 165 | (déjà séparé avant ce PR) |
+| `src/web/meeting.rs` | 528 | (déjà séparé avant ce PR) |
+
+### `src/email/` (était 5 711 lignes en un seul fichier)
+
+| Fichier | Lignes |
+|---|---:|
+| `src/email.rs` | **154** |
+| `src/email/templates.rs` | 118 |
+| `src/email/ics.rs` | 288 |
+| `src/email/senders.rs` | 1 226 |
+| `src/email/utility.rs` | 277 |
+| `src/email/reschedule.rs` | 384 |
+| `src/email/claim.rs` | 173 |
+| `src/email/tests.rs` | 3 091 |
+
+### `src/auth/` (était 2 714 lignes en un seul fichier)
+
+| Fichier | Lignes |
+|---|---:|
+| `src/auth.rs` | **441** |
+| `src/auth/extractors.rs` | 116 |
+| `src/auth/handlers.rs` | 333 |
+| `src/auth/oidc.rs` | 454 |
+| `src/auth/group_sync.rs` | 191 |
+| `src/auth/tests.rs` | 1 175 |
+
+### Notes sur la mécanique
+
+- Les découpes utilisent `include!("file.rs")` plutôt que `mod file;`, ce qui préserve l'identité du module parent et évite toute modification de visibilité (`pub`/`pub(super)`/`pub(crate)`). Le code reste byte-for-byte identique à l'original.
+- Conséquence : `cargo fmt` ne reformate pas les fichiers inclus. Les fichiers extraits sont déjà au format `rustfmt` au moment de l'extraction. Toute édition ultérieure devra être formatée à la main (ou convertir vers `mod` proper, ce qui demande un cycle de visibilité).
+- Les tests embarqués sont en revanche exposés via `mod tests;` standard (et non `include!`), car ils étaient déjà dans un sous-module et bénéficient du formatage automatique.
