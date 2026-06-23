@@ -230,3 +230,76 @@ email-cancel-headline-by-host = Votre réservation a été annulée par { $host 
 email-cancel-headline-by-guest = Votre réservation a été annulée.
 email-cancel-ics-attached-plain = Une annulation de calendrier est jointe.
 email-cancel-ics-attached-html = Une annulation de calendrier est jointe à cet e-mail.
+
+# Confirmation email: notice-window policy lines (src/email.rs)
+
+email-confirm-cancel-notice = Note : l'annulation requiert un préavis d'au moins { $minutes } minutes.
+email-confirm-reschedule-notice = Note : la modification requiert un préavis d'au moins { $minutes } minutes.
+
+# Event type form: cancel/reschedule minimum notice (templates/event_type_form.html)
+
+event-type-form-cancel-notice-label = Préavis minimum pour annuler
+event-type-form-reschedule-notice-label = Préavis minimum pour reprogrammer
+event-type-form-notice-help = Laissez vide pour aucune restriction.
+event-type-form-notice-unit-minutes = minutes
+event-type-form-notice-unit-hours = heures
+event-type-form-notice-unit-days = jours
+
+# Booking confirmation: cancel/reschedule policy notices (templates/confirmed.html)
+
+confirmed-cancel-notice-info = L'annulation requiert un préavis d'au moins { $minutes } minutes avant le rendez-vous.
+confirmed-reschedule-notice-info = La reprogrammation requiert un préavis d'au moins { $minutes } minutes avant le rendez-vous.
+
+# Booking action blocked page (templates/booking_action_blocked.html)
+
+booking-blocked-title-cancel = Cette réservation ne peut plus être annulée en ligne
+booking-blocked-title-reschedule = Cette réservation ne peut plus être reprogrammée en ligne
+booking-blocked-body = L'hôte requiert un préavis d'au moins { $minutes } minutes. Si vous ne pouvez pas être présent, veuillez écrire directement à <a href="mailto:{ $host_email }">{ $host_email }</a>.
+
+# Booking form & slot picker: phone field (templates/book.html, templates/slots.html)
+
+book-phone-label = Numéro de téléphone
+book-phone-invalid = Veuillez saisir un numéro de téléphone valide.
+
+# Slot picker: lead-capture gate (templates/slots.html)
+
+slots-lead-gate-title = Avant de choisir un créneau
+slots-lead-gate-subtitle = Indiquez à { $host } comment vous joindre. Vos coordonnées sont enregistrées afin qu'il puisse vous relancer même si vous ne finalisez pas la réservation.
+slots-lead-gate-button = Continuer vers les créneaux
+
+# Event type form: phone collection (templates/event_type_form.html)
+
+event-type-form-phone-label = Numéro de téléphone
+event-type-form-phone-off = Ne pas demander
+event-type-form-phone-optional = Demander (facultatif)
+event-type-form-phone-required = Exiger
+event-type-form-phone-help = Choisissez si les invités doivent indiquer un numéro de téléphone lors de la réservation.
+
+# Event type form: lead capture (templates/event_type_form.html)
+
+event-type-form-lead-capture-heading = Capture de prospects
+event-type-form-lead-capture-intro = Enregistrez ce que les invités saisissent dans le formulaire de réservation avant de l'envoyer, afin de pouvoir les relancer s'ils ne terminent pas.
+event-type-form-lead-capture-admin-disabled = La capture de prospects est actuellement désactivée globalement par votre administrateur.
+event-type-form-lead-capture-toggle = Capturer les réservations partielles pour ce type d'événement
+event-type-form-lead-capture-help = Les informations capturées sont conservées { $days } jours, puis supprimées automatiquement.
+event-type-form-lead-capture-acknowledged = Vous avez confirmé le { $date } que les invités sont informés.
+event-type-form-lead-capture-confirm = En activant ceci, vous confirmez informer les personnes qui réservent que leurs informations sont enregistrées avant l'envoi. Continuer ?
+
+# Admin: legal notice (templates/admin.html)
+
+admin-legal-heading = Mentions légales
+admin-legal-intro = Lien vers vos mentions légales / votre politique de confidentialité. Affiché aux invités là où leurs données personnelles sont collectées.
+admin-legal-url-label = URL des mentions légales
+admin-legal-url-help = URL publique de votre page de mentions légales ou de politique de confidentialité.
+admin-legal-save = Enregistrer les mentions légales
+
+# Admin: lead capture (templates/admin.html)
+
+admin-lead-heading = Capture de prospects
+admin-lead-intro = Activez globalement la capture de ce que les invités saisissent dans les formulaires de réservation avant l'envoi. Chaque type d'événement doit aussi l'activer.
+admin-lead-enable = Activer la capture de prospects globalement
+admin-lead-retention-label = Conservation
+admin-lead-retention-hint = (jours avant la suppression des prospects capturés)
+admin-lead-rgpd-strong = RGPD :
+admin-lead-rgpd-body = Il vous incombe d'informer les personnes qui réservent que leurs données sont enregistrées et de fournir des mentions légales. Les données capturées sont automatiquement supprimées après la période de conservation.
+admin-lead-save = Enregistrer les paramètres de capture
