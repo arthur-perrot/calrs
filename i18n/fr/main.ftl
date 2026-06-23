@@ -304,3 +304,10 @@ admin-lead-retention-hint = (jours avant la suppression des prospects capturés)
 admin-lead-rgpd-strong = RGPD :
 admin-lead-rgpd-body = Il vous incombe d'informer les personnes qui réservent que leurs données sont enregistrées et de fournir des mentions légales. Les données capturées sont automatiquement supprimées après la période de conservation.
 admin-lead-save = Enregistrer les paramètres de capture
+
+# Public footer: lead-capture RGPD notice (templates/base.html)
+
+lead-footer-legal = Vos informations peuvent être enregistrées — mentions légales
+lead-notice-summary = Vos informations peuvent être enregistrées
+book-lead-capture-notice = Ce que vous saisissez sur cette page peut être enregistré par l'hôte pour vous recontacter, même si vous ne finalisez pas votre réservation. Conservé { $days } jours, puis supprimé.
+lead-notice-more = En savoir plus

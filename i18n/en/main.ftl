@@ -315,3 +315,10 @@ admin-lead-retention-hint = (days before captured leads are deleted)
 admin-lead-rgpd-strong = GDPR:
 admin-lead-rgpd-body = You are responsible for informing bookers that their data is recorded and for providing a legal notice. Captured data is auto-deleted after the retention window.
 admin-lead-save = Save lead capture settings
+
+# Public footer: lead-capture RGPD notice (templates/base.html)
+
+lead-footer-legal = Your details may be recorded — privacy notice
+lead-notice-summary = Your details may be recorded
+book-lead-capture-notice = What you type on this page may be saved by the host so they can follow up with you, even if you don't finish booking. It is kept for { $days } days, then deleted.
+lead-notice-more = Learn more
