@@ -282,6 +282,7 @@ event-type-form-lead-capture-intro = Enregistrez ce que les invités saisissent 
 event-type-form-lead-capture-admin-disabled = La capture de prospects est actuellement désactivée globalement par votre administrateur.
 event-type-form-lead-capture-toggle = Capturer les réservations partielles pour ce type d'événement
 event-type-form-lead-capture-help = Les informations capturées sont conservées { $days } jours, puis supprimées automatiquement.
+event-type-form-lead-capture-ack-label = Je confirme informer les personnes qui réservent que leurs informations sont enregistrées avant l'envoi
 event-type-form-lead-capture-acknowledged = Vous avez confirmé le { $date } que les invités sont informés.
 event-type-form-lead-capture-confirm = En activant ceci, vous confirmez informer les personnes qui réservent que leurs informations sont enregistrées avant l'envoi. Continuer ?
 

@@ -293,6 +293,7 @@ event-type-form-lead-capture-intro = Record what guests type into the booking fo
 event-type-form-lead-capture-admin-disabled = Lead capture is currently disabled globally by your administrator.
 event-type-form-lead-capture-toggle = Capture partial bookings for this event type
 event-type-form-lead-capture-help = Captured details are kept for { $days } days, then automatically deleted.
+event-type-form-lead-capture-ack-label = I confirm I inform bookers their details are recorded before they submit
 event-type-form-lead-capture-acknowledged = You confirmed on { $date } that guests are informed.
 event-type-form-lead-capture-confirm = By enabling this, you confirm that you inform bookers their details are recorded before they submit. Continue?
 
