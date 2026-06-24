@@ -28,6 +28,12 @@ use std::sync::RwLock;
 static BASE_URL_DB: RwLock<Option<String>> = RwLock::new(None);
 /// DB-stored `CALRS_ALLOW_PRIVATE_HOSTS` fallback (already parsed/normalised).
 static ALLOW_PRIVATE_HOSTS_DB: RwLock<Option<Vec<String>>> = RwLock::new(None);
+/// DB-stored org-wide Gravatar toggle. `false` until `load_from_db` runs.
+///
+/// Cached process-globally for the same reason as the values above: avatar
+/// rendering decisions (`show_avatar`) and `serve_avatar` are called from many
+/// handlers that would otherwise each need a DB round-trip per render.
+static GRAVATAR_ENABLED_DB: RwLock<bool> = RwLock::new(false);
 
 /// Read `CALRS_BASE_URL` from the environment, trimmed; `None` when unset/empty.
 fn base_url_env() -> Option<String> {
@@ -105,14 +111,27 @@ pub fn private_host_allowlist_db() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Whether Gravatar is enabled org-wide. There is no environment override for
+/// this (unlike base URL / allowlist) — it is purely an admin DB setting.
+pub fn gravatar_enabled() -> bool {
+    GRAVATAR_ENABLED_DB.read().map(|g| *g).unwrap_or(false)
+}
+
 /// Overwrite the in-memory DB-backed values. Called after `load_from_db` and
 /// whenever the admin saves changes.
-fn set_cache(base_url: Option<String>, allow_private_hosts: Option<Vec<String>>) {
+fn set_cache(
+    base_url: Option<String>,
+    allow_private_hosts: Option<Vec<String>>,
+    gravatar_enabled: bool,
+) {
     if let Ok(mut g) = BASE_URL_DB.write() {
         *g = base_url;
     }
     if let Ok(mut g) = ALLOW_PRIVATE_HOSTS_DB.write() {
         *g = allow_private_hosts;
+    }
+    if let Ok(mut g) = GRAVATAR_ENABLED_DB.write() {
+        *g = gravatar_enabled;
     }
 }
 
@@ -120,8 +139,8 @@ fn set_cache(base_url: Option<String>, allow_private_hosts: Option<Vec<String>>)
 /// to call multiple times (startup, after admin save, before CLI validation).
 /// Silently leaves the cache untouched on error — the env fallback still works.
 pub async fn load_from_db(pool: &SqlitePool) {
-    let row: Option<(Option<String>, Option<String>)> = match sqlx::query_as(
-        "SELECT base_url, allow_private_hosts FROM auth_config WHERE id = 'singleton'",
+    let row: Option<(Option<String>, Option<String>, bool)> = match sqlx::query_as(
+        "SELECT base_url, allow_private_hosts, gravatar_enabled FROM auth_config WHERE id = 'singleton'",
     )
     .fetch_optional(pool)
     .await
@@ -136,7 +155,7 @@ pub async fn load_from_db(pool: &SqlitePool) {
     };
 
     // Ok(None) genuinely means no singleton row → reset to defaults.
-    let (base_url, allow_raw) = row.unwrap_or((None, None));
+    let (base_url, allow_raw, gravatar_enabled) = row.unwrap_or((None, None, false));
 
     let base_url = base_url
         .map(|v| v.trim().to_string())
@@ -145,7 +164,7 @@ pub async fn load_from_db(pool: &SqlitePool) {
         .map(|raw| parse_host_list(&raw))
         .filter(|list| !list.is_empty());
 
-    set_cache(base_url, allow_private_hosts);
+    set_cache(base_url, allow_private_hosts, gravatar_enabled);
 }
 
 #[cfg(test)]

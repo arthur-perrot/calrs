@@ -45,7 +45,7 @@
     <div style="display: flex; align-items: center; gap: 1rem;">
       <div style="width: 64px; height: 64px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 1.25rem; flex-shrink: 0; overflow: hidden;">
         {% if has_avatar %}
-          <img src="/avatar/{{ user_id }}" alt="" style="width: 100%; height: 100%; object-fit: cover;">
+          <img src="/avatar/{{ user_id }}" alt="" style="width: 100%; height: 100%; object-fit: cover;" data-initials="{{ form_initials }}" onerror="this.onerror=null; this.parentElement.textContent=this.dataset.initials;">
         {% else %}
           {{ form_initials }}
         {% endif %}
@@ -65,6 +65,20 @@
   </div>
 
   <form method="POST" style="margin-top: 0;">
+    {% if gravatar_enabled %}
+    <div class="form-group">
+      <label style="display: block; font-weight: 500; margin-bottom: 0.5rem; font-size: 0.875rem;">Avatar source</label>
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; cursor: pointer; margin-bottom: 0.35rem;">
+        <input type="radio" name="avatar_source" value="gravatar" {% if avatar_source != "internal" %}checked{% endif %}>
+        Gravatar <span class="hint" style="color: var(--text-muted);">(based on your email, via gravatar.com)</span>
+      </label>
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; cursor: pointer;">
+        <input type="radio" name="avatar_source" value="internal" {% if avatar_source == "internal" %}checked{% endif %}>
+        Uploaded avatar or initials
+      </label>
+      <span class="hint" style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-top: 0.35rem;">Your administrator has enabled Gravatar. Choose which avatar to display.</span>
+    </div>
+    {% endif %}
     <div class="form-group">
       <label for="name">Display name</label>
       <input type="text" id="name" name="name" required maxlength="255" value="{{ form_name }}" placeholder="Your name">

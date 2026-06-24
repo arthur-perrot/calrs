@@ -30,6 +30,9 @@ pub struct User {
     pub title: Option<String>,
     pub bio: Option<String>,
     pub avatar_path: Option<String>,
+    /// Avatar source preference: `None` (org default), `"gravatar"`, or
+    /// `"internal"`. See migration 062.
+    pub avatar_source: Option<String>,
     pub allow_dynamic_group: bool,
     pub language: Option<String>,
 }

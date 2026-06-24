@@ -68,6 +68,9 @@ zeroize = "1"
 hmac = "0.12"
 sha2 = "0.10"
 
+# MD5 for Gravatar email hashes (Gravatar's identity scheme mandates MD5)
+md5 = "0.7"
+
 # Auth
 argon2 = { version = "0.5", features = ["rand"] }
 rand = "0.8"
