@@ -567,6 +567,16 @@ async fn login_page(State(state): State<Arc<AppState>>, jar: CookieJar) -> Respo
         .map(|c| c.registration_enabled)
         .unwrap_or(true);
 
+    // Customizable SSO button: label (DB) + optional SVG logo (file on disk).
+    let sso_button_text = auth_config
+        .as_ref()
+        .and_then(|c| c.sso_button_text.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Sign in with SSO")
+        .to_string();
+    let sso_button_logo = crate::web::sso_logo_path(&state).exists();
+
     let csrf_token = generate_csrf_token();
 
     let tmpl = match state.templates.get_template("auth/login.html") {
@@ -574,7 +584,7 @@ async fn login_page(State(state): State<Arc<AppState>>, jar: CookieJar) -> Respo
         Err(e) => return crate::web::internal_error_response("template render", &e),
     };
     let body = Html(
-        tmpl.render(minijinja::context! { error => "", oidc_enabled => oidc_enabled, registration_enabled => registration_enabled, csrf_token => csrf_token })
+        tmpl.render(minijinja::context! { error => "", oidc_enabled => oidc_enabled, registration_enabled => registration_enabled, csrf_token => csrf_token, sso_button_text => sso_button_text, sso_button_logo => sso_button_logo })
             .unwrap_or_default(),
     );
     ([("Set-Cookie", csrf_cookie_value(&csrf_token))], body).into_response()
@@ -658,6 +668,7 @@ async fn register_page(State(state): State<Arc<AppState>>, jar: CookieJar) -> Re
         oidc_auto_register: true,
         google_oauth2_client_id: None,
         google_oauth2_client_secret: None,
+        sso_button_text: None,
     });
 
     if !auth_config.registration_enabled {
