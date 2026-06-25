@@ -3154,6 +3154,36 @@ mod tests {
     }
 
     #[test]
+    fn generate_ics_summary_resolves_title_variables() {
+        // End-to-end contract: a title with {host}/{invitee} variables, once
+        // resolved at BookingDetails construction (as the booking handlers do),
+        // appears resolved in the ICS SUMMARY the calendar shows.
+        let title = crate::web::substitute_event_vars(
+            "Intro between {host} and {invitee}",
+            "Olivier Lambert",
+            "Jean-Baptiste Piacentino",
+        );
+        let details = BookingDetails {
+            event_title: title,
+            date: "2026-03-10".to_string(),
+            start_time: "09:00".to_string(),
+            end_time: "09:30".to_string(),
+            guest_name: "Jean-Baptiste Piacentino".to_string(),
+            guest_email: "jb@test.com".to_string(),
+            guest_timezone: "UTC".to_string(),
+            host_name: "Olivier Lambert".to_string(),
+            host_email: "olivier@test.com".to_string(),
+            uid: "uid-vars".to_string(),
+            ..Default::default()
+        };
+
+        let ics = generate_ics(&details, "PUBLISH");
+        assert!(ics.contains("SUMMARY:Intro between Olivier Lambert and Jean-Baptiste Piacentino"));
+        assert!(!ics.contains("{host}"));
+        assert!(!ics.contains("{invitee}"));
+    }
+
+    #[test]
     fn generate_ics_escapes_special_chars() {
         let details = BookingDetails {
             event_title: "Meet; discuss, plan".to_string(),

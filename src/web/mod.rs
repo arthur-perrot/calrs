@@ -472,7 +472,7 @@ pub async fn run_reminder_loop(pool: SqlitePool, secret_key: [u8; 32]) {
 
             let location = location_value.as_ref().filter(|v| !v.is_empty()).cloned();
 
-            let details = crate::email::BookingDetails {
+            let mut details = crate::email::BookingDetails {
                 event_title: event_title.clone(),
                 date,
                 start_time,
@@ -492,6 +492,11 @@ pub async fn run_reminder_loop(pool: SqlitePool, secret_key: [u8; 32]) {
                 host_timezone: stored_tz_str.to_string(),
                 resource_name: booking_resource_label(&pool, uid).await,
             };
+            details.event_title = substitute_event_vars(
+                &details.event_title,
+                &details.host_name,
+                &details.guest_name,
+            );
 
             let guest_cancel_url = cancel_token.as_ref().and_then(|t| {
                 base_url
@@ -1560,6 +1565,51 @@ fn compute_initials(name: &str) -> String {
     } else {
         initials
     }
+}
+
+/// Substitute booking variables in an event-type title. Supported placeholders
+/// (case-insensitive, surrounding whitespace ignored): `{host}` → the host's
+/// name, `{invitee}`/`{name}`/`{guest}` → the guest's name. Unknown
+/// placeholders are kept verbatim so a typo is visible rather than silently
+/// dropped. Applied once when a booking's `BookingDetails` is built, so the
+/// resolved title flows to the ICS SUMMARY, CalDAV write-back, and every email.
+pub(crate) fn substitute_event_vars(template: &str, host_name: &str, guest_name: &str) -> String {
+    if !template.contains('{') {
+        return template.to_string();
+    }
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '{' {
+            out.push(c);
+            continue;
+        }
+        let mut name = String::new();
+        let mut closed = false;
+        for nc in chars.by_ref() {
+            if nc == '}' {
+                closed = true;
+                break;
+            }
+            name.push(nc);
+        }
+        if !closed {
+            // Unterminated brace: emit verbatim and stop scanning for a token.
+            out.push('{');
+            out.push_str(&name);
+            continue;
+        }
+        match name.trim().to_ascii_lowercase().as_str() {
+            "host" => out.push_str(host_name),
+            "invitee" | "name" | "guest" => out.push_str(guest_name),
+            _ => {
+                out.push('{');
+                out.push_str(&name);
+                out.push('}');
+            }
+        }
+    }
+    out
 }
 
 /// Build OIDC groups context with member details for stacked avatars.
@@ -4405,7 +4455,7 @@ async fn confirm_booking(
             )
         });
 
-    let details = crate::email::BookingDetails {
+    let mut details = crate::email::BookingDetails {
         event_title,
         date,
         start_time,
@@ -4424,6 +4474,11 @@ async fn confirm_booking(
         resource_name: booking_resource_label(&state.pool, &uid).await,
         ..Default::default()
     };
+    details.event_title = substitute_event_vars(
+        &details.event_title,
+        &details.host_name,
+        &details.guest_name,
+    );
 
     // Push to CalDAV calendar
     caldav_push_booking(&state.pool, &state.secret_key, &user.id, &uid, &details).await;
@@ -10057,7 +10112,7 @@ async fn handle_group_booking(
         !needs_approval,
     )
     .await;
-    let details = crate::email::BookingDetails {
+    let mut details = crate::email::BookingDetails {
         event_title: et_title.clone(),
         date: form.date.clone(),
         start_time: form.time.clone(),
@@ -10077,6 +10132,11 @@ async fn handle_group_booking(
         resource_name: booking_resource_label(&state.pool, &uid).await,
         ..Default::default()
     };
+    details.event_title = substitute_event_vars(
+        &details.event_title,
+        &details.host_name,
+        &details.guest_name,
+    );
 
     // For confirmed bookings, push to CalDAV and notify watchers regardless of
     // SMTP availability. notify_watchers self-gates on SMTP for the email part.
@@ -10916,7 +10976,7 @@ async fn handle_dynamic_group_booking(
         !needs_approval,
     )
     .await;
-    let details = crate::email::BookingDetails {
+    let mut details = crate::email::BookingDetails {
         event_title: et_title.clone(),
         date: form.date.clone(),
         start_time: form.time.clone(),
@@ -10936,6 +10996,11 @@ async fn handle_dynamic_group_booking(
         resource_name: booking_resource_label(&state.pool, &uid).await,
         ..Default::default()
     };
+    details.event_title = substitute_event_vars(
+        &details.event_title,
+        &details.host_name,
+        &details.guest_name,
+    );
 
     // Push confirmed bookings to the owner's CalDAV regardless of SMTP.
     // ICS includes co-participants as ATTENDEEs.
@@ -11758,7 +11823,7 @@ async fn handle_booking_for_user(
     .await;
 
     if let Some((host_name, host_email)) = host {
-        let details = crate::email::BookingDetails {
+        let mut details = crate::email::BookingDetails {
             event_title: et_title.clone(),
             date: form.date.clone(),
             start_time: form.time.clone(),
@@ -11778,6 +11843,11 @@ async fn handle_booking_for_user(
             resource_name: booking_resource_label(&state.pool, &uid).await,
             ..Default::default()
         };
+        details.event_title = substitute_event_vars(
+            &details.event_title,
+            &details.host_name,
+            &details.guest_name,
+        );
 
         // Push confirmed bookings to CalDAV regardless of SMTP availability.
         if !needs_approval {
@@ -14055,7 +14125,7 @@ async fn handle_booking(
             !needs_approval,
         )
         .await;
-        let details = crate::email::BookingDetails {
+        let mut details = crate::email::BookingDetails {
             event_title: et_title.clone(),
             date: form.date.clone(),
             start_time: form.time.clone(),
@@ -14075,6 +14145,11 @@ async fn handle_booking(
             resource_name: booking_resource_label(&state.pool, &uid).await,
             ..Default::default()
         };
+        details.event_title = substitute_event_vars(
+            &details.event_title,
+            &details.host_name,
+            &details.guest_name,
+        );
 
         // Push confirmed bookings to CalDAV regardless of SMTP availability.
         if !needs_approval {
@@ -17182,7 +17257,7 @@ async fn approve_booking_by_token(
     )
     .await;
 
-    let details = crate::email::BookingDetails {
+    let mut details = crate::email::BookingDetails {
         event_title: event_title.clone(),
         date: date.clone(),
         start_time: start_time.clone(),
@@ -17201,6 +17276,11 @@ async fn approve_booking_by_token(
         resource_name: booking_resource_label(&state.pool, &uid).await,
         ..Default::default()
     };
+    details.event_title = substitute_event_vars(
+        &details.event_title,
+        &details.host_name,
+        &details.guest_name,
+    );
 
     // Push to CalDAV calendar
     caldav_push_booking(&state.pool, &state.secret_key, &user_id, &uid, &details).await;
@@ -18478,7 +18558,7 @@ async fn guest_reschedule_booking(
                     new_reschedule_token
                 )
             });
-            let pending_details = crate::email::BookingDetails {
+            let mut pending_details = crate::email::BookingDetails {
                 event_title: et_title.clone(),
                 date: form.date.clone(),
                 start_time: form.time.clone(),
@@ -18497,6 +18577,11 @@ async fn guest_reschedule_booking(
                 resource_name: booking_resource_label(&state.pool, &uid).await,
                 ..Default::default()
             };
+            pending_details.event_title = substitute_event_vars(
+                &pending_details.event_title,
+                &pending_details.host_name,
+                &pending_details.guest_name,
+            );
             let _ = crate::email::send_guest_pending_notice_ex(
                 &smtp_config,
                 &pending_details,
@@ -18508,7 +18593,7 @@ async fn guest_reschedule_booking(
     } else {
         // Confirmed reschedule (host-initiated or guest on non-confirmation event)
         // Push updated event to CalDAV
-        let push_details = crate::email::BookingDetails {
+        let mut push_details = crate::email::BookingDetails {
             event_title: et_title.clone(),
             date: form.date.clone(),
             start_time: form.time.clone(),
@@ -18526,6 +18611,11 @@ async fn guest_reschedule_booking(
             host_timezone: host_tz.name().to_string(),
             ..Default::default()
         };
+        push_details.event_title = substitute_event_vars(
+            &push_details.event_title,
+            &push_details.host_name,
+            &push_details.guest_name,
+        );
         caldav_push_booking(
             &state.pool,
             &state.secret_key,
@@ -18756,7 +18846,7 @@ async fn host_reschedule_booking(
         let (date, start_time, end_time) =
             booking_strings_in_guest_tz(&start_at, &end_at, host_tz, guest_tz_parsed);
 
-        let details = crate::email::BookingDetails {
+        let mut details = crate::email::BookingDetails {
             event_title,
             date,
             start_time,
@@ -18777,6 +18867,11 @@ async fn host_reschedule_booking(
             host_timezone: host_tz.name().to_string(),
             ..Default::default()
         };
+        details.event_title = substitute_event_vars(
+            &details.event_title,
+            &details.host_name,
+            &details.guest_name,
+        );
 
         if let Some(url) = &reschedule_url {
             let _ = crate::email::send_guest_pick_new_time(
@@ -20098,6 +20193,11 @@ async fn claim_booking(
         host_timezone: claim_host_tz.name().to_string(),
         ..Default::default()
     };
+    details.event_title = substitute_event_vars(
+        &details.event_title,
+        &details.host_name,
+        &details.guest_name,
+    );
 
     // Also include any pre-existing additional attendees
     let existing_attendees: Vec<(String,)> =
@@ -29366,6 +29466,29 @@ mod tests {
         assert!(!csp.contains("cdn.jsdelivr.net"));
         assert!(csp.contains("script-src 'self' 'unsafe-inline'"));
         assert!(csp.contains("connect-src 'self'"));
+    }
+
+    #[test]
+    fn substitute_event_vars_replaces_known_tokens() {
+        assert_eq!(
+            substitute_event_vars("Intro {host} & {invitee}", "Arthur", "Antoine"),
+            "Intro Arthur & Antoine"
+        );
+        // Aliases + case-insensitivity + surrounding whitespace.
+        assert_eq!(
+            substitute_event_vars("{ HOST } meets {Name}", "Arthur", "Antoine"),
+            "Arthur meets Antoine"
+        );
+        // Unknown tokens and unterminated braces are kept verbatim.
+        assert_eq!(
+            substitute_event_vars("{unknown} {host", "Arthur", "Antoine"),
+            "{unknown} {host"
+        );
+        // No-op when there are no placeholders.
+        assert_eq!(
+            substitute_event_vars("Plain title", "Arthur", "Antoine"),
+            "Plain title"
+        );
     }
 
     #[test]
