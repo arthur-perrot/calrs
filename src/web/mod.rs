@@ -1649,10 +1649,12 @@ fn compute_initials(name: &str) -> String {
 
 /// Whether a user's avatar should render as an `<img src="/avatar/{id}">`
 /// (rather than initials). True when the user uploaded an avatar, or when
-/// Gravatar is enabled org-wide — in the latter case `serve_avatar` redirects
-/// to Gravatar (possibly the neutral default). The rare "opted into internal
-/// with no upload while Gravatar is on" case yields a 404 that the templates'
-/// `onerror` handler turns back into initials.
+/// Gravatar is the effective source (enabled org-wide and not opted out): in
+/// that case `serve_avatar` returns the upload or a Gravatar redirect (with the
+/// `d=mp` neutral default, so it never 404s). A user who opts into the internal
+/// source with no upload returns `false` here and gets initials directly — no
+/// `<img>`. The templates' `onerror` handler is a belt-and-suspenders fallback
+/// for the runtime case where Gravatar itself is unreachable.
 fn show_avatar(avatar_path: Option<&str>, avatar_source: Option<&str>) -> bool {
     avatar_path.is_some()
         || (crate::settings::gravatar_enabled() && avatar_source != Some("internal"))
@@ -16649,9 +16651,12 @@ async fn admin_update_oidc(
     let issuer_url = form.oidc_issuer_url.filter(|s| !s.trim().is_empty());
     let client_id = form.oidc_client_id.filter(|s| !s.trim().is_empty());
     let auto_register = form.oidc_auto_register.is_some();
+    // Trim, drop empties, and cap the length server-side (the form's
+    // maxlength is client-side only) so the label rendered on the public login
+    // page can't be bloated to an unbounded size.
     let sso_button_text = form
         .sso_button_text
-        .map(|s| s.trim().to_string())
+        .map(|s| s.trim().chars().take(64).collect::<String>())
         .filter(|s| !s.is_empty());
 
     // If client_secret is provided (non-empty), update it; otherwise keep current value
