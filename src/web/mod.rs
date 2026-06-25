@@ -16870,13 +16870,19 @@ async fn serve_sso_logo(State(state): State<Arc<AppState>>) -> impl IntoResponse
     let path = sso_logo_path(&state);
     match tokio::fs::read(&path).await {
         Ok(bytes) => {
-            let content_type = if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
-                "image/png"
-            } else if bytes.starts_with(&[0xFF, 0xD8]) {
-                "image/jpeg"
-            } else {
-                // Default to SVG (the expected format for an SSO logo).
+            // Match the upload validation: SVG is the common case, otherwise a
+            // raster image. Serving the right type matters — a GIF/WebP logo
+            // must not be labelled image/svg+xml.
+            let content_type = if looks_like_svg(&bytes) {
                 "image/svg+xml"
+            } else {
+                match detect_image_ext(&bytes) {
+                    Some("png") => "image/png",
+                    Some("jpg") => "image/jpeg",
+                    Some("gif") => "image/gif",
+                    Some("webp") => "image/webp",
+                    _ => "application/octet-stream",
+                }
             };
             axum::response::Response::builder()
                 .status(200)
