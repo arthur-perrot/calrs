@@ -434,8 +434,8 @@ pub async fn run_reminder_loop(pool: SqlitePool, secret_key: [u8; 32]) {
         // `host_timezone` resolves like `get_host_tz`: prefer the explicit
         // event-type tz, fall back to the host user's tz. NULL falls through
         // to UTC at parse time.
-        let due: Vec<(String, String, String, String, String, String, String, String, String, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT b.id, b.guest_name, b.guest_email, b.guest_timezone, b.start_at, b.end_at, et.title, u.name, COALESCE(u.booking_email, u.email), COALESCE(NULLIF(b.meeting_url, ''), et.location_value), b.cancel_token, b.uid, b.language, u.language, COALESCE(NULLIF(et.timezone, ''), u.timezone)
+        let due: Vec<(String, String, String, String, String, String, String, String, String, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, bool)> = sqlx::query_as(
+            "SELECT b.id, b.guest_name, b.guest_email, b.guest_timezone, b.start_at, b.end_at, et.title, u.name, COALESCE(u.booking_email, u.email), COALESCE(NULLIF(b.meeting_url, ''), et.location_value), b.cancel_token, b.uid, b.language, u.language, COALESCE(NULLIF(et.timezone, ''), u.timezone), et.host_reminder_enabled
              FROM bookings b
              JOIN event_types et ON et.id = b.event_type_id
              JOIN accounts a ON a.id = et.account_id
@@ -478,6 +478,7 @@ pub async fn run_reminder_loop(pool: SqlitePool, secret_key: [u8; 32]) {
             guest_language,
             host_language,
             host_timezone,
+            host_reminder_enabled,
         ) in &due
         {
             // start_at/end_at are stored in the event-type tz (see #101). Convert
@@ -527,7 +528,11 @@ pub async fn run_reminder_loop(pool: SqlitePool, secret_key: [u8; 32]) {
                 guest_cancel_url.as_deref(),
             )
             .await;
-            let _ = crate::email::send_host_reminder(&smtp_config, &details).await;
+            // The host reminder is opt-out per event type: a host whose own
+            // calendar already alerts them can disable this duplicate.
+            if *host_reminder_enabled {
+                let _ = crate::email::send_host_reminder(&smtp_config, &details).await;
+            }
 
             // Mark reminder as sent
             let _ =
@@ -4683,6 +4688,9 @@ struct EventTypeForm {
     // Reminder
     #[serde(default)]
     reminder_minutes: String,
+    // Whether to also email the host a reminder ("on" when checked). Unchecked
+    // (absent) disables the duplicate host reminder; the guest reminder stays.
+    host_reminder_enabled: Option<String>,
     // Additional guests
     #[serde(default)]
     max_additional_guests: String,
@@ -5025,6 +5033,7 @@ async fn new_event_type_form(
             form_meeting_pattern_override => "",
             form_avail_schedule => user_avail,
             form_reminder_minutes => 1440,
+            form_host_reminder_enabled => true,
             form_max_additional_guests => 0,
             form_collect_phone => 0,
             form_default_calendar_view => "month",
@@ -5190,6 +5199,8 @@ async fn create_event_type(
         }
     };
 
+    let host_reminder_enabled = form.host_reminder_enabled.as_deref() == Some("on");
+
     let default_calendar_view = match form.default_calendar_view.as_deref().unwrap_or("month") {
         v @ ("month" | "week" | "column") => v.to_string(),
         _ => "month".to_string(),
@@ -5211,6 +5222,7 @@ async fn create_event_type(
 
     let _ = sqlx::query(
         "INSERT INTO event_types (id, account_id, slug, title, description, duration_min, slot_interval_min, buffer_before, buffer_after, min_notice_min, requires_confirmation, location_type, location_value, team_id, created_by_user_id, reminder_minutes, visibility, max_additional_guests, default_calendar_view, first_slot_only, timezone, cancel_notice_min, reschedule_notice_min, meeting_pattern_override, collect_phone)
+        "INSERT INTO event_types (id, account_id, slug, title, description, duration_min, slot_interval_min, buffer_before, buffer_after, min_notice_min, requires_confirmation, location_type, location_value, team_id, created_by_user_id, reminder_minutes, host_reminder_enabled, visibility, max_additional_guests, default_calendar_view, first_slot_only, timezone, cancel_notice_min, reschedule_notice_min, meeting_pattern_override)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&et_id)
@@ -5229,6 +5241,7 @@ async fn create_event_type(
     .bind(team_id)
     .bind(if team_id.is_some() { Some(&user.id) } else { None })
     .bind(reminder_minutes)
+    .bind(host_reminder_enabled as i32)
     .bind(&visibility)
     .bind(parse_int_field(&form.max_additional_guests, 0))
     .bind(&default_calendar_view)
@@ -5650,6 +5663,14 @@ async fn edit_event_type_form(
     .await;
     let (resources_all, selected_resource_ids2, resource_scheduling_mode) =
         resources_form_ctx(&state.pool, Some(&et_id), &attachable).await;
+
+    let host_reminder_enabled: bool =
+        sqlx::query_scalar("SELECT host_reminder_enabled FROM event_types WHERE id = ?")
+            .bind(&et_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(true);
+
     Html(
         tmpl.render(context! {
             editing => true,
@@ -5679,6 +5700,7 @@ async fn edit_event_type_form(
             form_avail_windows => avail_windows,
             form_avail_schedule => avail_schedule,
             form_reminder_minutes => reminder_min.unwrap_or(0),
+            form_host_reminder_enabled => host_reminder_enabled,
             form_max_additional_guests => max_additional_guests,
             form_collect_phone => collect_phone,
             form_scheduling_mode => scheduling_mode,
@@ -5803,6 +5825,8 @@ async fn update_event_type(
         }
     };
 
+    let host_reminder_enabled = form.host_reminder_enabled.as_deref() == Some("on");
+
     let default_calendar_view = match form.default_calendar_view.as_deref().unwrap_or("month") {
         v @ ("month" | "week" | "column") => v.to_string(),
         _ => "month".to_string(),
@@ -5823,6 +5847,7 @@ async fn update_event_type(
 
     let _ = sqlx::query(
         "UPDATE event_types SET slug = ?, title = ?, description = ?, duration_min = ?, slot_interval_min = ?, buffer_before = ?, buffer_after = ?, min_notice_min = ?, requires_confirmation = ?, location_type = ?, location_value = ?, reminder_minutes = ?, visibility = ?, max_additional_guests = ?, scheduling_mode = ?, default_calendar_view = ?, first_slot_only = ?, timezone = ?, cancel_notice_min = ?, reschedule_notice_min = ?, meeting_pattern_override = ?, collect_phone = ? WHERE id = ?",
+        "UPDATE event_types SET slug = ?, title = ?, description = ?, duration_min = ?, slot_interval_min = ?, buffer_before = ?, buffer_after = ?, min_notice_min = ?, requires_confirmation = ?, location_type = ?, location_value = ?, reminder_minutes = ?, host_reminder_enabled = ?, visibility = ?, max_additional_guests = ?, scheduling_mode = ?, default_calendar_view = ?, first_slot_only = ?, timezone = ?, cancel_notice_min = ?, reschedule_notice_min = ?, meeting_pattern_override = ? WHERE id = ?",
     )
     .bind(&new_slug)
     .bind(form.title.trim())
@@ -5836,6 +5861,7 @@ async fn update_event_type(
     .bind(location_type)
     .bind(location_value)
     .bind(reminder_minutes)
+    .bind(host_reminder_enabled as i32)
     .bind(&visibility)
     .bind(parse_int_field(&form.max_additional_guests, 0))
     .bind(form.scheduling_mode.as_deref().unwrap_or("round_robin"))
@@ -8971,6 +8997,14 @@ async fn edit_group_event_type_form(
     let (resources_all, selected_resource_ids, resource_scheduling_mode) =
         resources_form_ctx(&state.pool, Some(&et_id), &attachable).await;
     let (impersonating, impersonating_name, _) = impersonation_ctx(&auth_user);
+
+    let host_reminder_enabled: bool =
+        sqlx::query_scalar("SELECT host_reminder_enabled FROM event_types WHERE id = ?")
+            .bind(&et_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(true);
+
     Html(
         tmpl.render(context! {
             editing => true,
@@ -9000,6 +9034,7 @@ async fn edit_group_event_type_form(
             form_avail_windows => avail_windows,
             form_avail_schedule => avail_schedule,
             form_reminder_minutes => reminder_min.unwrap_or(0),
+            form_host_reminder_enabled => host_reminder_enabled,
             form_max_additional_guests => max_additional_guests,
             form_collect_phone => collect_phone,
             form_scheduling_mode => scheduling_mode,
@@ -9136,6 +9171,8 @@ async fn update_group_event_type(
         }
     };
 
+    let host_reminder_enabled = form.host_reminder_enabled.as_deref() == Some("on");
+
     let default_calendar_view = match form.default_calendar_view.as_deref().unwrap_or("month") {
         v @ ("month" | "week" | "column") => v.to_string(),
         _ => "month".to_string(),
@@ -9156,6 +9193,7 @@ async fn update_group_event_type(
 
     let _ = sqlx::query(
         "UPDATE event_types SET slug = ?, title = ?, description = ?, duration_min = ?, slot_interval_min = ?, buffer_before = ?, buffer_after = ?, min_notice_min = ?, requires_confirmation = ?, location_type = ?, location_value = ?, reminder_minutes = ?, visibility = ?, max_additional_guests = ?, scheduling_mode = ?, default_calendar_view = ?, first_slot_only = ?, timezone = ?, cancel_notice_min = ?, reschedule_notice_min = ?, meeting_pattern_override = ?, collect_phone = ? WHERE id = ?",
+        "UPDATE event_types SET slug = ?, title = ?, description = ?, duration_min = ?, slot_interval_min = ?, buffer_before = ?, buffer_after = ?, min_notice_min = ?, requires_confirmation = ?, location_type = ?, location_value = ?, reminder_minutes = ?, host_reminder_enabled = ?, visibility = ?, max_additional_guests = ?, scheduling_mode = ?, default_calendar_view = ?, first_slot_only = ?, timezone = ?, cancel_notice_min = ?, reschedule_notice_min = ?, meeting_pattern_override = ? WHERE id = ?",
     )
     .bind(&new_slug)
     .bind(form.title.trim())
@@ -9169,6 +9207,7 @@ async fn update_group_event_type(
     .bind(location_type)
     .bind(location_value)
     .bind(reminder_minutes)
+    .bind(host_reminder_enabled as i32)
     .bind(&visibility)
     .bind(parse_int_field(&form.max_additional_guests, 0))
     .bind(form.scheduling_mode.as_deref().unwrap_or("round_robin"))
