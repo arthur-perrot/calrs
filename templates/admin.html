@@ -41,6 +41,24 @@
   </div>
 </div>
 
+<!-- Gravatar -->
+<div class="card">
+  <h2>Gravatar</h2>
+  <div style="margin-bottom: 1rem; font-size: 0.875rem; color: var(--text-secondary);">
+    Status: {% if gravatar_enabled %}<strong style="color: var(--success);">enabled</strong>{% else %}<span style="color: var(--text-muted);">disabled</span>{% endif %}
+  </div>
+  <p style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem;">When enabled, user avatars default to <a href="https://gravatar.com" target="_blank" rel="noopener">Gravatar</a> (based on each user's email). Each user can still opt back to the internal avatar / initials from their settings.</p>
+  <form method="post" action="/dashboard/admin/gravatar">
+    <div style="margin-bottom: 1rem;">
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.925rem; cursor: pointer;">
+        <input type="checkbox" name="gravatar_enabled" value="on" {% if gravatar_enabled %}checked{% endif %} style="width: 1rem; height: 1rem;">
+        Enable Gravatar organization-wide
+      </label>
+    </div>
+    <button type="submit" class="slot-btn" style="cursor: pointer; font-weight: 600; color: var(--accent); border-color: var(--accent);">Save Gravatar settings</button>
+  </form>
+</div>
+
 <!-- Legal -->
 <div class="card">
   <h2>{{ t("admin-legal-heading") }}</h2>

@@ -361,7 +361,7 @@
         <a href="/dashboard/settings">
           <div class="avatar-circle">
             {% if sidebar.has_avatar %}
-              <img src="/avatar/{{ sidebar.user_id }}" alt="">
+              <img src="/avatar/{{ sidebar.user_id }}" alt="" data-initials="{{ sidebar.user_initials }}" onerror="this.onerror=null; this.parentElement.textContent=this.dataset.initials;">
             {% else %}
               {{ sidebar.user_initials }}
             {% endif %}
