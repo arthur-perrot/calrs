@@ -51,7 +51,8 @@
 
   <div class="form-group">
     <label for="title">Title</label>
-    <input type="text" id="title" name="title" required value="{{ form_title }}" placeholder="30min intro call">
+    <input type="text" id="title" name="title" required value="{{ form_title }}" placeholder="Intro between {host} and {invitee}">
+    <span class="hint" style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-top: 0.25rem;">Variables: <code>{host}</code> (your name) and <code>{invitee}</code> (the guest's name) are replaced in the calendar event &amp; emails when someone books.</span>
   </div>
 
   <div class="form-group">
