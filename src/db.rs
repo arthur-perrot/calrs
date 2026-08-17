@@ -280,6 +280,18 @@ pub async fn migrate(pool: &SqlitePool) -> Result<()> {
             "066_managed_ews_unique",
             include_str!("../migrations/066_managed_ews_unique.sql"),
         ),
+        (
+            "067_lead_capture",
+            include_str!("../migrations/067_lead_capture.sql"),
+        ),
+        (
+            "068_lead_followups",
+            include_str!("../migrations/068_lead_followups.sql"),
+        ),
+        (
+            "069_lead_capture_legal_and_phone",
+            include_str!("../migrations/069_lead_capture_legal_and_phone.sql"),
+        ),
     ];
 
     let mut applied_count = 0u32;
@@ -887,7 +899,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count.0, 66, "All 66 migrations should be tracked");
+        assert_eq!(count.0, 69, "All 69 migrations should be tracked");
     }
 
     #[tokio::test]
@@ -901,7 +913,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count.0, 66, "Still 66 migrations after second run");
+        assert_eq!(count.0, 69, "Still 69 migrations after second run");
     }
 
     #[tokio::test]
