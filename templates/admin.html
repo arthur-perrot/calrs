@@ -385,8 +385,31 @@ document.querySelectorAll('input[type="color"]').forEach(function(picker) {
         Auto-register new users from OIDC
       </label>
     </div>
+    <div class="form-group">
+      <label>Login button label <span class="hint">(leave empty for "Sign in with SSO")</span></label>
+      <input type="text" name="sso_button_text" maxlength="64" value="{{ sso_button_text }}" placeholder="Sign in with SSO">
+    </div>
     <button type="submit" class="slot-btn" style="cursor: pointer; font-weight: 600; color: var(--accent); border-color: var(--accent);">Save OIDC settings</button>
   </form>
+  <div style="margin-top: 1.25rem; border-top: 1px solid var(--border); padding-top: 1rem;">
+    <label style="display: block; font-weight: 500; margin-bottom: 0.5rem; font-size: 0.875rem;">Login button logo <span class="hint" style="font-weight: 400;">(SVG recommended, max 1 MB)</span></label>
+    {% if has_sso_logo %}
+    <div style="margin-bottom: 0.75rem; padding: 0.75rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); display: inline-flex; align-items: center; gap: 0.5rem;">
+      <img src="/sso-logo" alt="SSO logo" style="height: 24px; max-width: 120px; object-fit: contain;">
+    </div>
+    {% endif %}
+    <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+      <form method="post" action="/dashboard/admin/sso-logo" enctype="multipart/form-data" style="margin: 0; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+        <input type="file" name="sso_logo" accept="image/svg+xml,image/png,image/jpeg" required style="font-size: 0.85rem;">
+        <button type="submit" class="slot-btn" style="cursor: pointer; font-weight: 600; color: var(--accent); border-color: var(--accent);">Upload</button>
+      </form>
+      {% if has_sso_logo %}
+      <form method="post" action="/dashboard/admin/sso-logo/delete" style="margin: 0;">
+        <button type="submit" class="slot-btn" style="cursor: pointer; font-size: 0.85rem; color: var(--error-text); border-color: var(--error-text);">Remove</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
 </div>
 
 <!-- Google Calendar OAuth2 -->

@@ -60,6 +60,9 @@ pub struct AuthConfig {
     pub oidc_auto_register: bool,
     pub google_oauth2_client_id: Option<String>,
     pub google_oauth2_client_secret: Option<String>,
+    /// Custom label for the "Sign in with SSO" button. `None`/empty falls back
+    /// to the default label. See migration 063.
+    pub sso_button_text: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

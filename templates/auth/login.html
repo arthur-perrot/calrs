@@ -14,7 +14,7 @@
   {% endif %}
 
   {% if oidc_enabled %}
-  <a href="/auth/oidc/login" class="btn" style="display: block; text-align: center; text-decoration: none; margin-bottom: 1.5rem;">Sign in with SSO</a>
+  <a href="/auth/oidc/login" class="btn" style="display: flex; align-items: center; justify-content: center; gap: 0.5rem; text-align: center; text-decoration: none; margin-bottom: 1.5rem;">{% if sso_button_logo %}<img src="/sso-logo" alt="" style="height: 1.15rem; width: auto; max-width: 1.6rem;">{% endif %}{{ sso_button_text }}</a>
   <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
     <hr style="flex: 1; border: none; border-top: 1px solid var(--border);">
     <span style="color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em;">or</span>

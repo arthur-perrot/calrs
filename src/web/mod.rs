@@ -1422,6 +1422,11 @@ pub async fn create_router(pool: SqlitePool, data_dir: PathBuf, secret_key: [u8;
         )
         .route("/dashboard/admin/logo", post(admin_upload_logo))
         .route("/dashboard/admin/logo/delete", post(admin_delete_logo))
+        .route("/dashboard/admin/sso-logo", post(admin_upload_sso_logo))
+        .route(
+            "/dashboard/admin/sso-logo/delete",
+            post(admin_delete_sso_logo),
+        )
         .route(
             "/dashboard/admin/company-link",
             post(admin_update_company_link),
@@ -1470,6 +1475,7 @@ pub async fn create_router(pool: SqlitePool, data_dir: PathBuf, secret_key: [u8;
         )
         // Serve logo and fonts
         .route("/logo", get(serve_logo))
+        .route("/sso-logo", get(serve_sso_logo))
         .route("/accent.css", get(serve_accent_css))
         .route("/brand-logo", get(serve_brand_logo))
         .route("/embed.js", get(serve_embed_js))
@@ -15649,6 +15655,11 @@ async fn admin_dashboard(
         .as_ref()
         .map(|c| c.oidc_auto_register)
         .unwrap_or(true);
+    let sso_button_text = auth_config
+        .as_ref()
+        .and_then(|c| c.sso_button_text.clone())
+        .unwrap_or_default();
+    let has_sso_logo = sso_logo_path(&state).exists();
     let google_oauth2_client_id = auth_config
         .as_ref()
         .and_then(|c| c.google_oauth2_client_id.clone())
@@ -15870,6 +15881,8 @@ async fn admin_dashboard(
             oidc_issuer_url => oidc_issuer_url,
             oidc_client_id => oidc_client_id,
             oidc_auto_register => oidc_auto_register,
+            sso_button_text => sso_button_text,
+            has_sso_logo => has_sso_logo,
             google_oauth2_client_id => google_oauth2_client_id,
             google_oauth2_configured => google_oauth2_configured,
             base_url => crate::settings::base_url().unwrap_or_default(),
@@ -16509,6 +16522,7 @@ struct AdminOidcForm {
     oidc_client_id: Option<String>,
     oidc_client_secret: Option<String>,
     oidc_auto_register: Option<String>,
+    sso_button_text: Option<String>,
 }
 
 async fn admin_update_oidc(
@@ -16524,6 +16538,10 @@ async fn admin_update_oidc(
     let issuer_url = form.oidc_issuer_url.filter(|s| !s.trim().is_empty());
     let client_id = form.oidc_client_id.filter(|s| !s.trim().is_empty());
     let auto_register = form.oidc_auto_register.is_some();
+    let sso_button_text = form
+        .sso_button_text
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     // If client_secret is provided (non-empty), update it; otherwise keep current value
     let secret_provided = form
@@ -16543,23 +16561,25 @@ async fn admin_update_oidc(
             Err(e) => return internal_error_response("encrypt oidc client_secret", &e),
         };
         let _ = sqlx::query(
-            "UPDATE auth_config SET oidc_enabled = ?, oidc_issuer_url = ?, oidc_client_id = ?, oidc_client_secret = ?, oidc_auto_register = ?, updated_at = datetime('now') WHERE id = 'singleton'",
+            "UPDATE auth_config SET oidc_enabled = ?, oidc_issuer_url = ?, oidc_client_id = ?, oidc_client_secret = ?, oidc_auto_register = ?, sso_button_text = ?, updated_at = datetime('now') WHERE id = 'singleton'",
         )
         .bind(oidc_enabled)
         .bind(&issuer_url)
         .bind(&client_id)
         .bind(&encrypted_secret)
         .bind(auto_register)
+        .bind(&sso_button_text)
         .execute(&state.pool)
         .await;
     } else {
         let _ = sqlx::query(
-            "UPDATE auth_config SET oidc_enabled = ?, oidc_issuer_url = ?, oidc_client_id = ?, oidc_auto_register = ?, updated_at = datetime('now') WHERE id = 'singleton'",
+            "UPDATE auth_config SET oidc_enabled = ?, oidc_issuer_url = ?, oidc_client_id = ?, oidc_auto_register = ?, sso_button_text = ?, updated_at = datetime('now') WHERE id = 'singleton'",
         )
         .bind(oidc_enabled)
         .bind(&issuer_url)
         .bind(&client_id)
         .bind(auto_register)
+        .bind(&sso_button_text)
         .execute(&state.pool)
         .await;
     }
@@ -17731,6 +17751,125 @@ async fn admin_delete_logo(
     }
     let logo_path = state.data_dir.join("logo.png");
     let _ = tokio::fs::remove_file(&logo_path).await;
+    Redirect::to("/dashboard/admin").into_response()
+}
+
+/// Path of the optional custom SSO-button logo on disk. Stored under a fixed
+/// name regardless of the uploaded format; the served content-type is sniffed
+/// from the bytes (SVG or raster). Shared with `auth::login_page` so the
+/// "is there a logo?" check and the storage location can't drift apart.
+pub(crate) fn sso_logo_path(state: &AppState) -> std::path::PathBuf {
+    state.data_dir.join("sso_logo.svg")
+}
+
+/// Whether the bytes look like an SVG document: an optional `<?xml …?>`
+/// declaration followed by an `<svg` root element. Accepting any `<?xml`
+/// prefix would let arbitrary XML through.
+fn looks_like_svg(bytes: &[u8]) -> bool {
+    let trimmed = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map(|i| &bytes[i..])
+        .unwrap_or(bytes);
+    if trimmed.starts_with(b"<svg") {
+        return true;
+    }
+    if trimmed.starts_with(b"<?xml") {
+        // Scan a bounded prefix for the actual <svg root.
+        let window = &trimmed[..trimmed.len().min(512)];
+        return window.windows(4).any(|w| w == b"<svg");
+    }
+    false
+}
+
+async fn serve_sso_logo(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let path = sso_logo_path(&state);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            // Match the upload validation: SVG is the common case, otherwise a
+            // raster image. Serving the right type matters — a GIF/WebP logo
+            // must not be labelled image/svg+xml.
+            let content_type = if looks_like_svg(&bytes) {
+                "image/svg+xml"
+            } else {
+                match detect_image_ext(&bytes) {
+                    Some("png") => "image/png",
+                    Some("jpg") => "image/jpeg",
+                    Some("gif") => "image/gif",
+                    Some("webp") => "image/webp",
+                    _ => "application/octet-stream",
+                }
+            };
+            axum::response::Response::builder()
+                .status(200)
+                .header("Content-Type", content_type)
+                // Stable URL: revalidate so a replaced logo shows immediately.
+                .header("Cache-Control", "no-cache, max-age=0")
+                // The logo is admin-uploaded and may be an SVG. Harden against
+                // script execution if the file is opened directly: deny all
+                // subresources and disable MIME sniffing. Rendering via <img>
+                // already neutralises scripts, this covers direct navigation.
+                .header(
+                    "Content-Security-Policy",
+                    "default-src 'none'; style-src 'unsafe-inline'",
+                )
+                .header("X-Content-Type-Options", "nosniff")
+                .body(axum::body::Body::from(bytes))
+                .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
+                .into_response()
+        }
+        Err(_) => (axum::http::StatusCode::NOT_FOUND, "").into_response(),
+    }
+}
+
+async fn admin_upload_sso_logo(
+    State(state): State<Arc<AppState>>,
+    _admin: crate::auth::AdminUser,
+    headers: HeaderMap,
+    Query(csrf_query): Query<CsrfQuery>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    if let Err(resp) = verify_csrf_token(&headers, &csrf_query._csrf) {
+        return resp;
+    }
+    while let Ok(Some(field)) = multipart.next_field().await {
+        if field.name() == Some("sso_logo") {
+            let content_type = field.content_type().unwrap_or("").to_string();
+            if !content_type.starts_with("image/") {
+                return Redirect::to("/dashboard/admin").into_response();
+            }
+            if let Ok(bytes) = field.bytes().await {
+                if bytes.len() > 1024 * 1024 {
+                    return Redirect::to("/dashboard/admin").into_response();
+                }
+                // Accept an SVG (the common case) or a raster image; reject
+                // anything else. Trust the bytes, not the multipart header.
+                if !looks_like_svg(&bytes) && detect_image_ext(&bytes).is_none() {
+                    return Redirect::to("/dashboard/admin").into_response();
+                }
+                if let Err(e) = tokio::fs::write(sso_logo_path(&state), &bytes).await {
+                    return internal_error_response("write sso logo", &e);
+                }
+            }
+        }
+    }
+    Redirect::to("/dashboard/admin").into_response()
+}
+
+async fn admin_delete_sso_logo(
+    State(state): State<Arc<AppState>>,
+    _admin: crate::auth::AdminUser,
+    headers: HeaderMap,
+    Form(csrf): Form<CsrfForm>,
+) -> impl IntoResponse {
+    if let Err(resp) = verify_csrf_token(&headers, &csrf._csrf) {
+        return resp;
+    }
+    match tokio::fs::remove_file(sso_logo_path(&state)).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return internal_error_response("delete sso logo", &e),
+    }
     Redirect::to("/dashboard/admin").into_response()
 }
 
@@ -30521,6 +30660,15 @@ mod tests {
         let url = gravatar_url("  Alice@Example.com ");
         assert!(url.contains("c160f8cc69a4f0bf2b0362752353d060"));
         assert!(url.starts_with("https://www.gravatar.com/avatar/"));
+    fn looks_like_svg_accepts_svg_rejects_plain_xml() {
+        assert!(looks_like_svg(b"<svg xmlns=\"...\"></svg>"));
+        assert!(looks_like_svg(b"  \n<svg></svg>"));
+        assert!(looks_like_svg(
+            b"<?xml version=\"1.0\"?>\n<svg xmlns=\"...\"></svg>"
+        ));
+        assert!(!looks_like_svg(b"<?xml version=\"1.0\"?><rss></rss>"));
+        assert!(!looks_like_svg(b"not xml at all"));
+        assert!(!looks_like_svg(&[0x89, 0x50, 0x4E, 0x47]));
     }
 
     #[test]

@@ -5,3 +5,5 @@
 .env
 .claude/
 docs/book/
+# Prod release tarballs (build artifacts, not source)
+*.tgz
