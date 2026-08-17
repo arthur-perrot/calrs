@@ -538,7 +538,14 @@
         <option value="1440" {% if form_reminder_minutes == 1440 %}selected{% endif %}>1 day before</option>
         <option value="2880" {% if form_reminder_minutes == 2880 %}selected{% endif %}>2 days before</option>
       </select>
-      <span class="hint" style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-top: 0.25rem;">Send a reminder email to both you and your guest before the meeting.</span>
+      <span class="hint" style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-top: 0.25rem;">Send a reminder email to your guest before the meeting.</span>
+    </div>
+    <div class="form-group" style="margin-top: 0.75rem;">
+      <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.925rem; cursor: pointer;">
+        <input type="checkbox" name="host_reminder_enabled" value="on" {% if form_host_reminder_enabled %}checked{% endif %} style="width: 1rem; height: 1rem;">
+        Also send the reminder to the host
+      </label>
+      <span class="hint" style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-top: 0.25rem;">Uncheck if the host's calendar already notifies them, to avoid a duplicate reminder.</span>
     </div>
   </div>
 </details>
